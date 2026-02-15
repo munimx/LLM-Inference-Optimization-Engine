@@ -1,14 +1,16 @@
 """Ollama client for HTTP communication with Ollama service."""
 
 import asyncio
-from typing import Any, Dict, List, Optional
+import json
+from typing import Any
+
 import httpx
 import structlog
 
 from llm_inference_engine.exceptions import (
+    ModelNotFoundError,
     OllamaConnectionError,
     OllamaTimeoutError,
-    ModelNotFoundError,
 )
 
 logger = structlog.get_logger(__name__)
@@ -35,7 +37,7 @@ class OllamaClient:
         self.base_url = f"http://{host}:{port}"
         self.timeout = timeout
         self.max_retries = max_retries
-        self._client: Optional[httpx.AsyncClient] = None
+        self._client: httpx.AsyncClient | None = None
         logger.info("ollama_client_initialized", base_url=self.base_url)
 
     async def __aenter__(self) -> "OllamaClient":
@@ -73,14 +75,18 @@ class OllamaClient:
             if self._client is None:
                 await self.connect()
 
-            assert self._client is not None
-            response = await self._client.get("/")
+            client = self._client
+            if client is None:
+                logger.warning("client_initialization_failed")
+                return False
+
+            response = await client.get("/")
             return response.status_code == 200
         except Exception as e:
             logger.warning("ollama_unavailable", error=str(e))
             return False
 
-    async def list_models(self) -> List[Dict[str, Any]]:
+    async def list_models(self) -> list[dict[str, Any]]:
         """List available models from Ollama.
 
         Returns:
@@ -93,20 +99,28 @@ class OllamaClient:
             if self._client is None:
                 await self.connect()
 
-            assert self._client is not None
-            response = await self._client.get("/api/tags")
+            client = self._client
+            if client is None:
+                raise OllamaConnectionError("Failed to initialize client")
+
+            response = await client.get("/api/tags")
             response.raise_for_status()
 
-            data = response.json()
-            models = data.get("models", [])
+            try:
+                data = response.json()
+            except (ValueError, json.JSONDecodeError) as e:
+                logger.error("failed_to_list_models", error=str(e))
+                raise OllamaConnectionError("Failed to list models: invalid JSON response") from e
+
+            models: list[dict[str, Any]] = data.get("models", [])
             logger.info("models_listed", count=len(models))
             return models
 
         except httpx.HTTPError as e:
             logger.error("failed_to_list_models", error=str(e))
-            raise OllamaConnectionError(f"Failed to list models: {e}")
+            raise OllamaConnectionError(f"Failed to list models: {e}") from e
 
-    async def get_model_info(self, model_name: str) -> Dict[str, Any]:
+    async def get_model_info(self, model_name: str) -> dict[str, Any]:
         """Get information about a specific model.
 
         Args:
@@ -132,7 +146,7 @@ class OllamaClient:
             raise
         except Exception as e:
             logger.error("failed_to_get_model_info", model=model_name, error=str(e))
-            raise OllamaConnectionError(f"Failed to get model info: {e}")
+            raise OllamaConnectionError(f"Failed to get model info: {e}") from e
 
     async def generate(
         self,
@@ -140,9 +154,9 @@ class OllamaClient:
         prompt: str,
         temperature: float = 0.7,
         top_p: float = 0.9,
-        max_tokens: Optional[int] = None,
-        stop_sequences: Optional[List[str]] = None,
-    ) -> Dict[str, Any]:
+        max_tokens: int | None = None,
+        stop_sequences: list[str] | None = None,
+    ) -> dict[str, Any]:
         """Generate text using Ollama.
 
         Args:
@@ -163,7 +177,7 @@ class OllamaClient:
         if self._client is None:
             await self.connect()
 
-        payload: Dict[str, Any] = {
+        payload: dict[str, Any] = {
             "model": model,
             "prompt": prompt,
             "temperature": temperature,
@@ -179,11 +193,20 @@ class OllamaClient:
 
         for attempt in range(self.max_retries):
             try:
-                assert self._client is not None
-                response = await self._client.post("/api/generate", json=payload)
+                # Safe type narrowing
+                client = self._client
+                if client is None:
+                    raise OllamaConnectionError("Failed to initialize client")
+
+                response = await client.post("/api/generate", json=payload)
                 response.raise_for_status()
 
-                result = response.json()
+                try:
+                    result: dict[str, Any] = response.json()
+                except (ValueError, json.JSONDecodeError) as e:
+                    logger.error("invalid_json_response_generate", model=model, error=str(e))
+                    raise OllamaConnectionError(f"Invalid JSON response from Ollama generation: {e}") from e
+
                 logger.info(
                     "generation_completed",
                     model=model,
@@ -194,24 +217,60 @@ class OllamaClient:
 
             except httpx.TimeoutException as e:
                 if attempt == self.max_retries - 1:
-                    logger.error("generation_timeout", model=model, attempt=attempt + 1)
-                    raise OllamaTimeoutError(f"Request timed out after {self.max_retries} attempts")
-                
+                    logger.error("generation_timeout", model=model, attempt=attempt + 1, error=str(e))
+                    raise OllamaTimeoutError(
+                        f"Request timed out after {self.max_retries} attempts: {e}"
+                    ) from e
+
                 logger.warning(
                     "generation_timeout_retry",
                     model=model,
                     attempt=attempt + 1,
+                    error=str(e),
                     wait_time=2 ** attempt,
                 )
-                await asyncio.sleep(2 ** attempt)  # Exponential backoff
+                await asyncio.sleep(2 ** attempt)
 
-            except httpx.HTTPError as e:
-                logger.error("generation_failed", model=model, error=str(e))
-                raise OllamaConnectionError(f"Generation failed: {e}")
+            except httpx.HTTPStatusError as e:
+                status_code = e.response.status_code
+                if status_code < 500:
+                    logger.error("generation_client_error", model=model, status=status_code)
+                    raise OllamaConnectionError(f"Generation failed: {e}") from e
+
+                if attempt == self.max_retries - 1:
+                    logger.error("generation_server_error", model=model, status=status_code)
+                    raise OllamaConnectionError(
+                        f"Server error after {self.max_retries} attempts: {e}"
+                    ) from e
+
+                logger.warning(
+                    "generation_server_error_retry",
+                    model=model,
+                    attempt=attempt + 1,
+                    status=status_code,
+                    wait_time=2 ** attempt,
+                )
+                await asyncio.sleep(2 ** attempt)
+
+            except httpx.RequestError as e:
+                if attempt == self.max_retries - 1:
+                    logger.error("generation_connection_error", model=model, attempt=attempt + 1, error=str(e))
+                    raise OllamaConnectionError(
+                        f"Connection error after {self.max_retries} attempts: {e}"
+                    ) from e
+
+                logger.warning(
+                    "generation_retry",
+                    model=model,
+                    attempt=attempt + 1,
+                    error=str(e),
+                    wait_time=2 ** attempt,
+                )
+                await asyncio.sleep(2 ** attempt)
 
         raise OllamaConnectionError("Unexpected error: max retries exhausted")
 
-    async def health_check(self) -> Dict[str, Any]:
+    async def health_check(self) -> dict[str, Any]:
         """Perform health check on Ollama service.
 
         Returns:

@@ -14,4 +14,7 @@ ruff>=0.1.0
 
 # Type stubs
 types-pyyaml
-types-requests
+# httpx ships with inline type hints, no stub package required
+
+# HTTP mocking
+respx>=0.20.0

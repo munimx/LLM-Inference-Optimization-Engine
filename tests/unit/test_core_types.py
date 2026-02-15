@@ -1,12 +1,13 @@
 """Unit tests for core types."""
 
 import pytest
+
 from llm_inference_engine.core.types import (
     GenerationConfig,
+    GenerationResult,
     Request,
     RequestStatus,
     Response,
-    GenerationResult,
 )
 
 

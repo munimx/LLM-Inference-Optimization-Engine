@@ -1,7 +1,7 @@
 """Ollama model management."""
 
 from dataclasses import dataclass
-from typing import Dict, List, Optional
+from typing import Any, Dict, List, Optional
 import structlog
 
 from llm_inference_engine.integration.ollama_client import OllamaClient
@@ -24,7 +24,7 @@ class ModelInfo:
     memory_estimate_gb: Optional[float] = None
 
     @classmethod
-    def from_ollama_response(cls, data: Dict) -> "ModelInfo":
+    def from_ollama_response(cls, data: Dict[str, Any]) -> "ModelInfo":
         """Create ModelInfo from Ollama API response.
 
         Args:

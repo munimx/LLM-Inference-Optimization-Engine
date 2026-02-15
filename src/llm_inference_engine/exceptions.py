@@ -1,12 +1,12 @@
 """Custom exceptions for the LLM inference engine."""
 
-from typing import Optional
+from typing import Any, Optional
 
 
 class InferenceEngineError(Exception):
     """Base exception for all inference engine errors."""
 
-    def __init__(self, message: str, details: Optional[dict] = None) -> None:
+    def __init__(self, message: str, details: Optional[dict[str, Any]] = None) -> None:
         super().__init__(message)
         self.message = message
         self.details = details or {}
