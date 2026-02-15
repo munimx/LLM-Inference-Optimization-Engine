@@ -1,12 +1,14 @@
 """Unit tests for configuration management."""
 
-import pytest
 from pathlib import Path
+
+import pytest
+
 from llm_inference_engine.config import (
-    OllamaConfig,
-    ModelConfig,
-    ServerConfig,
     InferenceConfig,
+    ModelConfig,
+    OllamaConfig,
+    ServerConfig,
     load_config,
 )
 from llm_inference_engine.exceptions import ConfigurationError
@@ -90,7 +92,7 @@ class TestInferenceConfig:
         """Test loading from non-existent file."""
         with pytest.raises(FileNotFoundError):
             InferenceConfig.from_yaml(Path("nonexistent.yaml"))
-    
+
     def test_from_yaml_invalid_yaml(self, tmp_path: Path) -> None:
         """Test invalid YAML handling."""
         bad_path = tmp_path / "bad.yaml"

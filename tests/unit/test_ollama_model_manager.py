@@ -1,9 +1,11 @@
-import pytest
-from typing import AsyncIterator
 from unittest.mock import AsyncMock
-from llm_inference_engine.integration.ollama_models import OllamaModelManager, ModelInfo
-from llm_inference_engine.integration.ollama_client import OllamaClient
+
+import pytest
+
 from llm_inference_engine.exceptions import ModelNotFoundError
+from llm_inference_engine.integration.ollama_client import OllamaClient
+from llm_inference_engine.integration.ollama_models import ModelInfo, OllamaModelManager
+
 
 @pytest.fixture
 def mock_client() -> AsyncMock:
