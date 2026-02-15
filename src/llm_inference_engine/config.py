@@ -87,7 +87,7 @@ class InferenceConfig:
         models_data = data.get("models", {})
         models = {}
         for model_name, model_data in models_data.items():
-            models[model_name] = ModelConfig(name=model_name, **model_data)
+            models[model_name] = ModelConfig(**model_data)
 
         logger.info("configuration_loaded", config_path=str(config_path))
 

@@ -18,25 +18,33 @@ server:
 # Model Configurations
 models:
   mistral:
-    name: "mistral:7b-instruct-q4_K_M"
+    name: "mistral:7b"
     context_length: 8192
-    memory_gb: 4.2
-    quantization: "4-bit GPTQ"
+    memory_gb: 4.1
+    quantization: "4-bit"
     default_temperature: 0.7
     default_top_p: 0.9
   
-  llama2:
-    name: "llama2:13b-chat-q4_K_M"
-    context_length: 4096
-    memory_gb: 8.5
-    quantization: "4-bit GPTQ"
+  llama3:
+    name: "llama3.1:8b"
+    context_length: 8192
+    memory_gb: 4.6
+    quantization: "4-bit"
     default_temperature: 0.7
     default_top_p: 0.9
   
   phi3:
-    name: "phi3:3.8b-mini-instruct-4k-q4_K_M"
+    name: "phi3:3.8b"
     context_length: 4096
-    memory_gb: 2.8
-    quantization: "4-bit GPTQ"
+    memory_gb: 2.0
+    quantization: "4-bit"
+    default_temperature: 0.7
+    default_top_p: 0.9
+  
+  deepseek:
+    name: "deepseek-r1:7b"
+    context_length: 4096
+    memory_gb: 4.4
+    quantization: "4-bit"
     default_temperature: 0.7
     default_top_p: 0.9
