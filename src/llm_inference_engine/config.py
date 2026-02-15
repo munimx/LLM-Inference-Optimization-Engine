@@ -108,8 +108,9 @@ class InferenceConfig:
                 raise ConfigurationError(
                     f"Model configuration for '{model_name}' must be a dictionary"
                 )
+            # Work on a copy to avoid mutating the original YAML-loaded data
+            model_data = model_data.copy()
             if "name" not in model_data:
-                model_data = model_data.copy()
                 model_data["name"] = model_name
             try:
                 models[model_name] = ModelConfig(**model_data)

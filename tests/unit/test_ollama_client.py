@@ -1,26 +1,27 @@
 import pytest
 import respx
 import httpx
+from typing import Any
 from unittest.mock import patch
 from llm_inference_engine.integration.ollama_client import OllamaClient
 from llm_inference_engine.exceptions import OllamaConnectionError, OllamaTimeoutError, ModelNotFoundError
 
 @pytest.mark.asyncio
-async def test_ollama_client_is_available(respx_mock):
+async def test_ollama_client_is_available(respx_mock: Any) -> None:
     respx_mock.get("http://localhost:11434/").mock(return_value=httpx.Response(200))
     
     async with OllamaClient() as client:
         assert await client.is_available()
 
 @pytest.mark.asyncio
-async def test_ollama_client_is_unavailable(respx_mock):
+async def test_ollama_client_is_unavailable(respx_mock: Any) -> None:
     respx_mock.get("http://localhost:11434/").mock(side_effect=httpx.ConnectError("Connection refused"))
     
     async with OllamaClient() as client:
         assert not await client.is_available()
 
 @pytest.mark.asyncio
-async def test_list_models_success(respx_mock):
+async def test_list_models_success(respx_mock: Any) -> None:
     models_data = {"models": [{"name": "llama2", "size": 1000}]}
     respx_mock.get("http://localhost:11434/api/tags").mock(return_value=httpx.Response(200, json=models_data))
     
@@ -30,7 +31,7 @@ async def test_list_models_success(respx_mock):
         assert models[0]["name"] == "llama2"
 
 @pytest.mark.asyncio
-async def test_list_models_failure(respx_mock):
+async def test_list_models_failure(respx_mock: Any) -> None:
     respx_mock.get("http://localhost:11434/api/tags").mock(return_value=httpx.Response(500))
     
     async with OllamaClient() as client:
@@ -38,7 +39,7 @@ async def test_list_models_failure(respx_mock):
             await client.list_models()
 
 @pytest.mark.asyncio
-async def test_generate_success(respx_mock):
+async def test_generate_success(respx_mock: Any) -> None:
     respx_mock.post("http://localhost:11434/api/generate").mock(
         return_value=httpx.Response(200, json={"response": "Hello", "eval_count": 5})
     )
@@ -48,7 +49,7 @@ async def test_generate_success(respx_mock):
         assert result["response"] == "Hello"
 
 @pytest.mark.asyncio
-async def test_generate_retry_on_timeout(respx_mock):
+async def test_generate_retry_on_timeout(respx_mock: Any) -> None:
     # First call times out, second succeeds
     route = respx_mock.post("http://localhost:11434/api/generate")
     route.side_effect = [
@@ -65,7 +66,7 @@ async def test_generate_retry_on_timeout(respx_mock):
             assert route.call_count == 2
 
 @pytest.mark.asyncio
-async def test_generate_retry_on_5xx(respx_mock):
+async def test_generate_retry_on_5xx(respx_mock: Any) -> None:
     # First call 503, second succeeds
     route = respx_mock.post("http://localhost:11434/api/generate")
     route.side_effect = [
@@ -81,7 +82,7 @@ async def test_generate_retry_on_5xx(respx_mock):
             assert route.call_count == 2
 
 @pytest.mark.asyncio
-async def test_generate_fail_after_retries(respx_mock):
+async def test_generate_fail_after_retries(respx_mock: Any) -> None:
     route = respx_mock.post("http://localhost:11434/api/generate")
     route.side_effect = httpx.ConnectError("Failed")
     
@@ -93,7 +94,7 @@ async def test_generate_fail_after_retries(respx_mock):
     assert route.call_count == 2
 
 @pytest.mark.asyncio
-async def test_generate_timeout_raises_timeout_error(respx_mock):
+async def test_generate_timeout_raises_timeout_error(respx_mock: Any) -> None:
     respx_mock.post("http://localhost:11434/api/generate").mock(
         side_effect=httpx.ReadTimeout("Timeout")
     )
@@ -105,7 +106,7 @@ async def test_generate_timeout_raises_timeout_error(respx_mock):
                 await client.generate("llama2", "Hi")
 
 @pytest.mark.asyncio
-async def test_generate_does_not_retry_on_4xx(respx_mock):
+async def test_generate_does_not_retry_on_4xx(respx_mock: Any) -> None:
     route = respx_mock.post("http://localhost:11434/api/generate")
     route.side_effect = [httpx.Response(400, json={"error": "bad request"})]
 

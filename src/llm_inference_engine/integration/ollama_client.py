@@ -99,7 +99,7 @@ class OllamaClient:
 
             client = self._client
             if client is None:
-                 raise OllamaConnectionError("Failed to initialize client")
+                raise OllamaConnectionError("Failed to initialize client")
 
             response = await client.get("/api/tags")
             response.raise_for_status()
@@ -186,9 +186,6 @@ class OllamaClient:
 
         for attempt in range(self.max_retries):
             try:
-                if self._client is None:
-                    await self.connect()
-                
                 # Safe type narrowing
                 client = self._client
                 if client is None:
@@ -258,10 +255,6 @@ class OllamaClient:
                     wait_time=2 ** attempt,
                 )
                 await asyncio.sleep(2 ** attempt)
-
-            except httpx.HTTPError as e:
-                logger.error("generation_failed_fatal", model=model, error=str(e))
-                raise OllamaConnectionError(f"Generation failed: {e}") from e
 
         raise OllamaConnectionError("Unexpected error: max retries exhausted")
 
