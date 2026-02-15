@@ -9,6 +9,7 @@ from llm_inference_engine.config import (
     InferenceConfig,
     load_config,
 )
+from llm_inference_engine.exceptions import ConfigurationError
 
 
 class TestOllamaConfig:
@@ -89,6 +90,20 @@ class TestInferenceConfig:
         """Test loading from non-existent file."""
         with pytest.raises(FileNotFoundError):
             InferenceConfig.from_yaml(Path("nonexistent.yaml"))
+    
+    def test_from_yaml_invalid_yaml(self, tmp_path: Path) -> None:
+        """Test invalid YAML handling."""
+        bad_path = tmp_path / "bad.yaml"
+        bad_path.write_text("ollama: [unclosed")
+        with pytest.raises(ConfigurationError):
+            InferenceConfig.from_yaml(bad_path)
+
+    def test_from_yaml_invalid_types(self, tmp_path: Path) -> None:
+        """Test invalid type handling in config."""
+        bad_path = tmp_path / "bad_types.yaml"
+        bad_path.write_text("ollama:\n  unknown_field: 1\n")
+        with pytest.raises(ConfigurationError):
+            InferenceConfig.from_yaml(bad_path)
 
     def test_get_model_config(self, config_path: Path) -> None:
         """Test retrieving model configuration."""
