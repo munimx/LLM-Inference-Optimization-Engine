@@ -73,8 +73,12 @@ class OllamaClient:
             if self._client is None:
                 await self.connect()
 
-            assert self._client is not None
-            response = await self._client.get("/")
+            client = self._client
+            if client is None:
+                logger.warning("client_initialization_failed")
+                return False
+
+            response = await client.get("/")
             return response.status_code == 200
         except Exception as e:
             logger.warning("ollama_unavailable", error=str(e))
@@ -93,12 +97,15 @@ class OllamaClient:
             if self._client is None:
                 await self.connect()
 
-            assert self._client is not None
-            response = await self._client.get("/api/tags")
+            client = self._client
+            if client is None:
+                 raise OllamaConnectionError("Failed to initialize client")
+
+            response = await client.get("/api/tags")
             response.raise_for_status()
 
             data = response.json()
-            models = data.get("models", [])
+            models: List[Dict[str, Any]] = data.get("models", [])
             logger.info("models_listed", count=len(models))
             return models
 
@@ -179,11 +186,18 @@ class OllamaClient:
 
         for attempt in range(self.max_retries):
             try:
-                assert self._client is not None
-                response = await self._client.post("/api/generate", json=payload)
+                if self._client is None:
+                    await self.connect()
+                
+                # Safe type narrowing
+                client = self._client
+                if client is None:
+                    raise OllamaConnectionError("Failed to initialize client")
+
+                response = await client.post("/api/generate", json=payload)
                 response.raise_for_status()
 
-                result = response.json()
+                result: Dict[str, Any] = response.json()
                 logger.info(
                     "generation_completed",
                     model=model,
@@ -194,20 +208,60 @@ class OllamaClient:
 
             except httpx.TimeoutException as e:
                 if attempt == self.max_retries - 1:
-                    logger.error("generation_timeout", model=model, attempt=attempt + 1)
-                    raise OllamaTimeoutError(f"Request timed out after {self.max_retries} attempts")
-                
+                    logger.error("generation_timeout", model=model, attempt=attempt + 1, error=str(e))
+                    raise OllamaTimeoutError(
+                        f"Request timed out after {self.max_retries} attempts: {e}"
+                    ) from e
+
                 logger.warning(
                     "generation_timeout_retry",
                     model=model,
                     attempt=attempt + 1,
+                    error=str(e),
                     wait_time=2 ** attempt,
                 )
-                await asyncio.sleep(2 ** attempt)  # Exponential backoff
+                await asyncio.sleep(2 ** attempt)
+
+            except httpx.HTTPStatusError as e:
+                status_code = e.response.status_code
+                if status_code < 500:
+                    logger.error("generation_client_error", model=model, status=status_code)
+                    raise OllamaConnectionError(f"Generation failed: {e}") from e
+
+                if attempt == self.max_retries - 1:
+                    logger.error("generation_server_error", model=model, status=status_code)
+                    raise OllamaConnectionError(
+                        f"Server error after {self.max_retries} attempts: {e}"
+                    ) from e
+
+                logger.warning(
+                    "generation_server_error_retry",
+                    model=model,
+                    attempt=attempt + 1,
+                    status=status_code,
+                    wait_time=2 ** attempt,
+                )
+                await asyncio.sleep(2 ** attempt)
+
+            except httpx.RequestError as e:
+                if attempt == self.max_retries - 1:
+                    logger.error("generation_connection_error", model=model, attempt=attempt + 1, error=str(e))
+                    raise OllamaConnectionError(
+                        f"Connection error after {self.max_retries} attempts: {e}"
+                    ) from e
+
+                logger.warning(
+                    "generation_retry",
+                    model=model,
+                    attempt=attempt + 1,
+                    error=str(e),
+                    wait_time=2 ** attempt,
+                )
+                await asyncio.sleep(2 ** attempt)
 
             except httpx.HTTPError as e:
-                logger.error("generation_failed", model=model, error=str(e))
-                raise OllamaConnectionError(f"Generation failed: {e}")
+                logger.error("generation_failed_fatal", model=model, error=str(e))
+                raise OllamaConnectionError(f"Generation failed: {e}") from e
 
         raise OllamaConnectionError("Unexpected error: max retries exhausted")
 
