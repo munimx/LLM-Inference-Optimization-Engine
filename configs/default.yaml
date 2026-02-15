@@ -34,7 +34,7 @@ models:
     default_top_p: 0.9
   
   phi3:
-    name: "phi3:latest"
+    name: "phi3:3.8b"
     context_length: 4096
     memory_gb: 2.0
     quantization: "4-bit"
