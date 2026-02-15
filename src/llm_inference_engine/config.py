@@ -6,6 +6,8 @@ from typing import Any, Dict, Optional
 import yaml
 import structlog
 
+from llm_inference_engine.exceptions import ConfigurationError
+
 logger = structlog.get_logger(__name__)
 
 
@@ -64,30 +66,58 @@ class InferenceConfig:
 
         Raises:
             FileNotFoundError: If config file doesn't exist
-            ValueError: If config is invalid
+            ConfigurationError: If config is invalid
         """
         if not config_path.exists():
             raise FileNotFoundError(f"Configuration file not found: {config_path}")
 
-        with open(config_path) as f:
-            data = yaml.safe_load(f)
+        try:
+            with open(config_path) as f:
+                data = yaml.safe_load(f)
+        except yaml.YAMLError as e:
+            logger.error("config_yaml_error", error=str(e))
+            raise ConfigurationError(f"Invalid YAML in configuration file: {e}") from e
 
         if not isinstance(data, dict):
-            raise ValueError("Configuration must be a dictionary")
+            raise ConfigurationError("Configuration must be a dictionary")
 
         # Parse Ollama config
         ollama_data = data.get("ollama", {})
-        ollama_config = OllamaConfig(**ollama_data)
+        try:
+            ollama_config = OllamaConfig(**ollama_data)
+        except TypeError as e:
+            logger.error("config_type_error", error=str(e))
+            raise ConfigurationError(f"Invalid ollama configuration: {e}") from e
 
         # Parse server config
         server_data = data.get("server", {})
-        server_config = ServerConfig(**server_data)
+        try:
+            server_config = ServerConfig(**server_data)
+        except TypeError as e:
+            logger.error("config_type_error", error=str(e))
+            raise ConfigurationError(f"Invalid server configuration: {e}") from e
 
         # Parse model configs
         models_data = data.get("models", {})
+        if not isinstance(models_data, dict):
+            raise ConfigurationError("Models configuration must be a dictionary")
+
         models = {}
         for model_name, model_data in models_data.items():
-            models[model_name] = ModelConfig(**model_data)
+            if not isinstance(model_data, dict):
+                raise ConfigurationError(
+                    f"Model configuration for '{model_name}' must be a dictionary"
+                )
+            if "name" not in model_data:
+                model_data = model_data.copy()
+                model_data["name"] = model_name
+            try:
+                models[model_name] = ModelConfig(**model_data)
+            except TypeError as e:
+                logger.error("config_type_error", error=str(e))
+                raise ConfigurationError(
+                    f"Invalid model configuration for '{model_name}': {e}"
+                ) from e
 
         logger.info("configuration_loaded", config_path=str(config_path))
 
