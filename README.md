@@ -69,13 +69,13 @@ python scripts/run_server.py
 
 ## Project Status
 
-**Current Phase**: Phase 1 - Ollama Integration  
+**Current Phase**: Phase 2 - Quantization Analysis  
 **Progress**: 🟢 In Progress
 
 | Phase | Status | Description |
 |-------|--------|-------------|
-| Phase 1 | 🟢 In Progress | Ollama Integration & Setup |
-| Phase 2 | ⚪ Planned | Quantization Understanding |
+| Phase 1 | ✅ Complete | Ollama Integration & Setup |
+| Phase 2 | 🟢 In Progress | Quantization Analysis & Benchmarking |
 | Phase 3 | ⚪ Planned | Batching & Scheduling |
 | Phase 4 | ⚪ Planned | KV-Cache Management |
 | Phase 5 | ⚪ Planned | REST API Orchestration |
@@ -87,6 +87,15 @@ python scripts/run_server.py
 - [Architecture Overview](docs/architecture.md)
 - [Ollama Integration Guide](docs/ollama_integration.md)
 - [Configuration Guide](docs/configuration.md)
+- [Quantization Analysis Guide](docs/quantization_analysis.md)
+- [Latest Benchmark Results](docs/benchmark_results.md)
+
+## Quantization Benchmarking
+
+```bash
+# Run comprehensive quantization benchmark suite
+python scripts/run_benchmarks.py --all
+```
 
 ## Performance Targets
 

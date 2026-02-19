@@ -1,0 +1,32 @@
+benchmark:
+  performance:
+    warmup_runs: 1
+    measurement_runs: 3
+    timeout_seconds: 120
+    measure_memory: true
+    scenarios:
+      - name: "short_to_long"
+        prompt: "Explain quantum computing in simple terms."
+        max_tokens: 128
+        description: "Generation-heavy workload"
+      - name: "balanced"
+        prompt: "Write a Python function to calculate fibonacci numbers with memoization."
+        max_tokens: 96
+        description: "Balanced workload"
+  quality:
+    enabled: true
+    test_cases_file: "configs/quality_test_cases.yaml"
+    metrics:
+      - "bleu"
+      - "rouge"
+  models:
+    families:
+      - "llama3.1"
+      - "mistral"
+      - "phi3"
+    specific: []
+  output:
+    directory: "tests/benchmarks/benchmark_results"
+    format: "json"
+    generate_report: true
+    report_format: "markdown"

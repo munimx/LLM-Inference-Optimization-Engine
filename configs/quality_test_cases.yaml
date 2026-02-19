@@ -1,0 +1,19 @@
+quality_test_cases:
+  - task_type: "reasoning"
+    prompt: "A train travels 60 miles in 1.5 hours. What is its average speed?"
+    max_tokens: 80
+    reference_outputs:
+      - "The average speed is 40 miles per hour."
+      - "Speed = distance/time = 60/1.5 = 40 mph."
+  - task_type: "factual"
+    prompt: "What is the capital city of Japan?"
+    max_tokens: 40
+    reference_outputs:
+      - "The capital city of Japan is Tokyo."
+      - "Tokyo is the capital of Japan."
+  - task_type: "creative"
+    prompt: "Write one short motivational sentence about persistence."
+    max_tokens: 40
+    reference_outputs:
+      - "Persistence turns small daily efforts into remarkable achievements."
+      - "Keep going—consistent effort eventually breaks every barrier."

@@ -8,8 +8,8 @@ from pathlib import Path
 # Add src to path
 sys.path.insert(0, str(Path(__file__).parent.parent / "src"))
 
-from llm_inference_engine.integration import OllamaClient, OllamaModelManager
 from llm_inference_engine.config import load_config
+from llm_inference_engine.integration import OllamaClient, OllamaModelManager
 
 
 async def verify_ollama_setup() -> bool:
