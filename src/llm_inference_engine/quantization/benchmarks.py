@@ -41,6 +41,7 @@ class BenchmarkRunner:
         memory_profiler = MemoryProfiler() if self._config.measure_memory else None
         throughputs: list[float] = []
         latencies_ms: list[float] = []
+        prompt_eval_durations_ns: list[int] = []
         generated_text = ""
         prompt_tokens = 0
         completion_tokens = 0
@@ -55,12 +56,15 @@ class BenchmarkRunner:
             total_latency_ms = timer.elapsed_ms()
             completion_tokens = int(response.get("eval_count", 0))
             prompt_tokens = int(response.get("prompt_eval_count", 0))
+            prompt_eval_duration_ns = int(response.get("prompt_eval_duration", 0))
             generated_text = str(response.get("response", ""))
             throughput = self._measure_throughput(
                 response=response, fallback_latency_ms=total_latency_ms
             )
             throughputs.append(throughput)
             latencies_ms.append(total_latency_ms)
+            if prompt_eval_duration_ns > 0:
+                prompt_eval_durations_ns.append(prompt_eval_duration_ns)
             if memory_profiler is not None:
                 memory_profiler.get_current_memory_mb()
 
@@ -68,7 +72,9 @@ class BenchmarkRunner:
         filtered_latencies = StatisticsCalculator.remove_outliers(latencies_ms)
         avg_throughput = mean(filtered_throughputs)
         avg_latency = mean(filtered_latencies)
-        ttft_ms, total_latency_ms = self._measure_latency(latencies=filtered_latencies)
+        ttft_ms, total_latency_ms = self._measure_latency(
+            latencies=filtered_latencies, prompt_eval_durations_ns=prompt_eval_durations_ns
+        )
         memory_baseline, memory_peak = self._measure_memory(memory_profiler)
         quantization = self._extract_quantization(model)
 
@@ -109,12 +115,18 @@ class BenchmarkRunner:
             return float(eval_count)
         return eval_count / (fallback_latency_ms / 1000.0)
 
-    def _measure_latency(self, latencies: list[float]) -> tuple[float, float]:
-        """Estimate TTFT and total latency from sampled latencies."""
+    def _measure_latency(
+        self, latencies: list[float], prompt_eval_durations_ns: list[int]
+    ) -> tuple[float, float]:
+        """Measure latency, estimating TTFT only when prompt timing is unavailable."""
         if not latencies:
             return 0.0, 0.0
         avg_latency = mean(latencies)
-        return avg_latency * 0.2, avg_latency
+        if prompt_eval_durations_ns:
+            ttft_ms = mean(prompt_eval_durations_ns) / 1_000_000
+        else:
+            ttft_ms = avg_latency * 0.2
+        return ttft_ms, avg_latency
 
     def _measure_memory(self, profiler: MemoryProfiler | None) -> tuple[float, float]:
         """Measure baseline and peak memory usage."""

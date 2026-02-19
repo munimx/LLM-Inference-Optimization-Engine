@@ -132,3 +132,11 @@ def test_extract_quantization_handles_fp16_variant(mock_client: AsyncMock) -> No
     config = BenchmarkConfig(prompt="test", max_tokens=8, num_runs=1, warmup_runs=0)
     runner = BenchmarkRunner(client=mock_client, config=config)
     assert runner._extract_quantization("mistral:7b-fp16") == "fp16"
+
+
+def test_measure_latency_uses_prompt_eval_duration(mock_client: AsyncMock) -> None:
+    config = BenchmarkConfig(prompt="test", max_tokens=8, num_runs=1, warmup_runs=0)
+    runner = BenchmarkRunner(client=mock_client, config=config)
+    ttft_ms, total_latency_ms = runner._measure_latency([300.0, 500.0], [40_000_000, 60_000_000])
+    assert ttft_ms == 50.0
+    assert total_latency_ms == 400.0
