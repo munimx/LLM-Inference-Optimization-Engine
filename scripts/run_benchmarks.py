@@ -55,14 +55,42 @@ def _load_quality_cases(path: Path) -> list[QualityTestCase]:
     return cases
 
 
+def _select_scenario(perf_cfg: dict[str, Any], scenario_name: str | None) -> dict[str, Any]:
+    raw_scenarios = perf_cfg.get("scenarios", [{}])
+    scenarios = [item for item in raw_scenarios if isinstance(item, dict)]
+    if not scenarios:
+        return {}
+    if scenario_name is None:
+        return scenarios[0]
+    for scenario in scenarios:
+        if str(scenario.get("name", "")) == scenario_name:
+            return scenario
+    raise ValueError(f"Unknown scenario: {scenario_name}")
+
+
+def _select_models(
+    models: list[Any], model_name: str | None, family_name: str | None
+) -> list[Any]:
+    if model_name is not None:
+        selected = [model for model in models if getattr(model, "name", "") == model_name]
+    elif family_name is not None:
+        normalized_family = family_name.lower()
+        selected = [
+            model for model in models if str(getattr(model, "family", "")).lower() == normalized_family
+        ]
+    else:
+        selected = models
+    if not selected:
+        raise ValueError("No models matched the provided CLI filters")
+    return selected
+
+
 async def run(args: argparse.Namespace) -> Path:
     """Run benchmark command and return output JSON path."""
     config_payload = _load_yaml(args.config)
     benchmark_cfg = config_payload.get("benchmark", {})
     perf_cfg = benchmark_cfg.get("performance", {})
-    scenario = perf_cfg.get("scenarios", [{}])[0]
-    if not isinstance(scenario, dict):
-        scenario = {}
+    scenario = _select_scenario(perf_cfg, getattr(args, "scenario", None))
 
     config = load_config(Path("configs/default.yaml"))
     client = OllamaClient(
@@ -78,6 +106,10 @@ async def run(args: argparse.Namespace) -> Path:
         manager = OllamaModelManager(client)
         collector = QuantizationInfoCollector(client, manager)
         suite = BenchmarkSuite(client=client, collector=collector, output_dir=output_dir)
+        discovered_models = await collector.collect_all_quantizations()
+        selected_models = _select_models(discovered_models, args.model, args.family)
+        selected_model_names = [model.name for model in selected_models]
+        model_metadata = {model.name: model for model in selected_models}
         benchmark_config = BenchmarkConfig(
             prompt=str(scenario.get("prompt", "Explain quantization in one paragraph.")),
             max_tokens=int(scenario.get("max_tokens", 96)),
@@ -87,11 +119,17 @@ async def run(args: argparse.Namespace) -> Path:
             timeout_seconds=float(perf_cfg.get("timeout_seconds", 120)),
         )
         if args.quality_only:
-            results: dict[str, Any] = await suite.run_quality_suite(benchmark_config)
+            results: dict[str, Any] = await suite.run_quality_suite(
+                benchmark_config, model_names=selected_model_names
+            )
         elif args.performance_only:
-            results = await suite.run_performance_suite(benchmark_config)
+            results = await suite.run_performance_suite(
+                benchmark_config, model_names=selected_model_names
+            )
         else:
-            results = await suite.run_comprehensive_suite(benchmark_config)
+            results = await suite.run_comprehensive_suite(
+                benchmark_config, model_names=selected_model_names
+            )
 
         quality_scores: dict[str, Any] = {}
         quality_cfg = benchmark_cfg.get("quality", {})
@@ -116,17 +154,28 @@ async def run(args: argparse.Namespace) -> Path:
         for row in model_rows:
             if not isinstance(row, dict):
                 continue
+            metadata = model_metadata.get(row["model_name"])
             models_payload.append(
                 {
                     "name": row["model_name"],
-                    "family": row["model_name"].split(":")[0],
-                    "quantization": row.get("quantization", "unknown"),
-                    "size_bytes": 0,
-                    "memory_estimate_gb": float(row.get("memory_peak_mb", 0.0)) / 1024,
-                    "parameters": None,
-                    "context_length": 4096,
-                    "quality_tier": "acceptable",
-                    "format": "gguf",
+                    "family": (
+                        metadata.family if metadata is not None else row["model_name"].split(":")[0]
+                    ),
+                    "quantization": (
+                        metadata.quantization.value
+                        if metadata is not None
+                        else row.get("quantization", "unknown")
+                    ),
+                    "size_bytes": metadata.size_bytes if metadata is not None else 0,
+                    "memory_estimate_gb": (
+                        metadata.memory_estimate_gb if metadata is not None else 0.0
+                    ),
+                    "parameters": metadata.parameters if metadata is not None else None,
+                    "context_length": metadata.context_length if metadata is not None else 4096,
+                    "quality_tier": (
+                        metadata.quality_tier.value if metadata is not None else "acceptable"
+                    ),
+                    "format": metadata.format if metadata is not None else "gguf",
                     "tokens_per_second": float(row.get("tokens_per_second", 0.0)),
                     "time_to_first_token_ms": float(row.get("time_to_first_token_ms", 0.0)),
                     "memory_peak_mb": float(row.get("memory_peak_mb", 0.0)),
@@ -168,11 +217,13 @@ async def run(args: argparse.Namespace) -> Path:
 def main() -> None:
     """CLI entrypoint."""
     parser = argparse.ArgumentParser(description="Run quantization benchmarks")
-    parser.add_argument(
+    target_group = parser.add_mutually_exclusive_group()
+    target_group.add_argument(
         "--all", action="store_true", help="Run benchmark over all discovered models"
     )
-    parser.add_argument("--family", type=str, help="Benchmark a specific model family")
-    parser.add_argument("--model", type=str, help="Benchmark a specific model")
+    target_group.add_argument("--family", type=str, help="Benchmark a specific model family")
+    target_group.add_argument("--model", type=str, help="Benchmark a specific model")
+    parser.add_argument("--scenario", type=str, help="Select a named benchmark scenario")
     parser.add_argument(
         "--performance-only", action="store_true", help="Run only performance suite"
     )
