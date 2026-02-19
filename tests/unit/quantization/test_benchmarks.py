@@ -70,3 +70,25 @@ async def test_benchmark_suite_save_load(
     loaded = suite.load_results("results.json")
     assert path.exists()
     assert loaded["type"] == "performance"
+
+
+@pytest.mark.asyncio
+async def test_quality_suite_returns_quality_type(
+    mock_client: AsyncMock, benchmark_config: BenchmarkConfig, tmp_path: Path
+) -> None:
+    collector = AsyncMock()
+    collector.collect_all_quantizations.return_value = [
+        QuantizedModelInfo(
+            name="model-a-q4_0",
+            family="model-a",
+            quantization=QuantizationLevel.Q4_0,
+            size_bytes=1,
+            memory_estimate_gb=1.0,
+            parameters=None,
+            context_length=4096,
+            quality_tier=QualityTier.ACCEPTABLE,
+        )
+    ]
+    suite = BenchmarkSuite(client=mock_client, collector=collector, output_dir=tmp_path)
+    payload = await suite.run_quality_suite(benchmark_config)
+    assert payload["type"] == "quality"

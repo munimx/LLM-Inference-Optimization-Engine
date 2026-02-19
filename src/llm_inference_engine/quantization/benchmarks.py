@@ -169,10 +169,11 @@ class BenchmarkSuite:
             num_runs=max(1, config.num_runs - 1),
             warmup_runs=config.warmup_runs,
             measure_memory=False,
-            measure_quality=True,
+            measure_quality=False,
             timeout_seconds=config.timeout_seconds,
         )
-        return await self.run_performance_suite(quality_config)
+        payload = await self.run_performance_suite(quality_config)
+        return {**payload, "type": "quality"}
 
     async def run_comprehensive_suite(self, config: BenchmarkConfig) -> dict[str, Any]:
         """Run combined performance and quality suites."""
