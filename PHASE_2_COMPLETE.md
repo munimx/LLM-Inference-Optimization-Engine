@@ -17,7 +17,8 @@ Phase 2 implementation is complete on `phase-2-quantization-analysis`.
 
 - `configs/benchmarks.yaml`
 - `configs/quality_test_cases.yaml`
-- Machine-readable benchmark output: `tests/benchmarks/benchmark_results/benchmark_results.json`
+- Runtime machine-readable output (CLI `--output` default): `tests/benchmarks/benchmark_results/benchmark_results.json`
+- Committed latest sample JSON artifact: `docs/benchmark_results.json`
 - Human-readable benchmark report: `docs/benchmark_results.md`
 
 ## Validation
