@@ -59,3 +59,9 @@ async def test_compare_to_baseline() -> None:
     )
     ratio = await benchmark.compare_to_baseline("model-a", "model-b")
     assert ratio >= 0.0
+
+
+def test_quality_benchmark_requires_dataset() -> None:
+    client = AsyncMock()
+    with pytest.raises(ValueError, match="test_dataset"):
+        QualityBenchmark(client=client, test_dataset=[])

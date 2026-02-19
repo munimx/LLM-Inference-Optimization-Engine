@@ -66,6 +66,8 @@ class QualityBenchmark:
 
     def __init__(self, client: OllamaClient, test_dataset: list[QualityTestCase]) -> None:
         """Initialize quality benchmark runner."""
+        if not test_dataset:
+            raise ValueError("test_dataset must contain at least one quality test case")
         self._client = client
         self._test_dataset = test_dataset
         self._calculator = QualityMetricsCalculator()
