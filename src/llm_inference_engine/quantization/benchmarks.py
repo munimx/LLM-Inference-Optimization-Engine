@@ -147,12 +147,15 @@ class BenchmarkSuite:
         self._output_dir = output_dir
         self._output_dir.mkdir(parents=True, exist_ok=True)
 
-    async def run_performance_suite(self, config: BenchmarkConfig) -> dict[str, Any]:
+    async def run_performance_suite(
+        self, config: BenchmarkConfig, model_names: list[str] | None = None
+    ) -> dict[str, Any]:
         """Run performance benchmarks for all available models."""
         models = await self._collector.collect_all_quantizations()
         runner = BenchmarkRunner(self._client, config)
-        model_names = [model.name for model in models]
-        benchmark_results = await runner.run_model_family(model_names)
+        available_names = [model.name for model in models]
+        selected_model_names = model_names or available_names
+        benchmark_results = await runner.run_model_family(selected_model_names)
         summary = self._summarize_results(benchmark_results)
         return {
             "type": "performance",
@@ -161,7 +164,9 @@ class BenchmarkSuite:
             "summary": summary,
         }
 
-    async def run_quality_suite(self, config: BenchmarkConfig) -> dict[str, Any]:
+    async def run_quality_suite(
+        self, config: BenchmarkConfig, model_names: list[str] | None = None
+    ) -> dict[str, Any]:
         """Run quality-oriented benchmark configuration."""
         quality_config = BenchmarkConfig(
             prompt=config.prompt,
@@ -172,13 +177,15 @@ class BenchmarkSuite:
             measure_quality=False,
             timeout_seconds=config.timeout_seconds,
         )
-        payload = await self.run_performance_suite(quality_config)
+        payload = await self.run_performance_suite(quality_config, model_names=model_names)
         return {**payload, "type": "quality"}
 
-    async def run_comprehensive_suite(self, config: BenchmarkConfig) -> dict[str, Any]:
+    async def run_comprehensive_suite(
+        self, config: BenchmarkConfig, model_names: list[str] | None = None
+    ) -> dict[str, Any]:
         """Run combined performance and quality suites."""
-        performance = await self.run_performance_suite(config)
-        quality = await self.run_quality_suite(config)
+        performance = await self.run_performance_suite(config, model_names=model_names)
+        quality = await self.run_quality_suite(config, model_names=model_names)
         return {"performance": performance, "quality": quality}
 
     def save_results(self, results: dict[str, Any], filename: str) -> Path:
