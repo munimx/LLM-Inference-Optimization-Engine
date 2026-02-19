@@ -1,11 +1,12 @@
 """Ollama model management."""
 
 from dataclasses import dataclass
-from typing import Any, Dict, List, Optional
+from typing import Any
+
 import structlog
 
-from llm_inference_engine.integration.ollama_client import OllamaClient
 from llm_inference_engine.exceptions import ModelNotFoundError
+from llm_inference_engine.integration.ollama_client import OllamaClient
 
 logger = structlog.get_logger(__name__)
 
@@ -19,12 +20,12 @@ class ModelInfo:
     quantization: str
     family: str
     format: str
-    parameters: Optional[int] = None
+    parameters: int | None = None
     context_length: int = 4096
-    memory_estimate_gb: Optional[float] = None
+    memory_estimate_gb: float | None = None
 
     @classmethod
-    def from_ollama_response(cls, data: Dict[str, Any]) -> "ModelInfo":
+    def from_ollama_response(cls, data: dict[str, Any]) -> "ModelInfo":
         """Create ModelInfo from Ollama API response.
 
         Args:
@@ -75,7 +76,7 @@ class OllamaModelManager:
             client: Ollama client instance
         """
         self.client = client
-        self._model_cache: Dict[str, ModelInfo] = {}
+        self._model_cache: dict[str, ModelInfo] = {}
         logger.info("model_manager_initialized")
 
     async def refresh_models(self) -> None:
@@ -94,7 +95,7 @@ class OllamaModelManager:
             logger.error("failed_to_refresh_models", error=str(e))
             raise
 
-    async def get_available_models(self) -> List[ModelInfo]:
+    async def get_available_models(self) -> list[ModelInfo]:
         """Get list of available models.
 
         Returns:

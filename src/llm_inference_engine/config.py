@@ -2,9 +2,10 @@
 
 from dataclasses import dataclass, field
 from pathlib import Path
-from typing import Any, Dict, Optional
-import yaml
+from typing import Any
+
 import structlog
+import yaml
 
 from llm_inference_engine.exceptions import ConfigurationError
 
@@ -52,7 +53,7 @@ class InferenceConfig:
 
     ollama: OllamaConfig = field(default_factory=OllamaConfig)
     server: ServerConfig = field(default_factory=ServerConfig)
-    models: Dict[str, ModelConfig] = field(default_factory=dict)
+    models: dict[str, ModelConfig] = field(default_factory=dict)
 
     @classmethod
     def from_yaml(cls, config_path: Path) -> "InferenceConfig":
@@ -128,7 +129,7 @@ class InferenceConfig:
             models=models,
         )
 
-    def get_model_config(self, model_name: str) -> Optional[ModelConfig]:
+    def get_model_config(self, model_name: str) -> ModelConfig | None:
         """Get configuration for a specific model.
 
         Args:
@@ -139,7 +140,7 @@ class InferenceConfig:
         """
         return self.models.get(model_name)
 
-    def to_dict(self) -> Dict[str, Any]:
+    def to_dict(self) -> dict[str, Any]:
         """Convert configuration to dictionary.
 
         Returns:
@@ -175,7 +176,7 @@ class InferenceConfig:
         }
 
 
-def load_config(config_path: Optional[Path] = None) -> InferenceConfig:
+def load_config(config_path: Path | None = None) -> InferenceConfig:
     """Load configuration from file or use defaults.
 
     Args:

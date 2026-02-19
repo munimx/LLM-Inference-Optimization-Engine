@@ -1,9 +1,9 @@
 """Core types and data models."""
 
 from dataclasses import dataclass, field
-from enum import Enum
-from typing import Any, Dict, List, Optional
 from datetime import datetime
+from enum import Enum
+from typing import Any
 
 
 class RequestStatus(str, Enum):
@@ -26,7 +26,7 @@ class GenerationConfig:
     top_p: float = 0.9
     frequency_penalty: float = 0.0
     presence_penalty: float = 0.0
-    stop_sequences: List[str] = field(default_factory=list)
+    stop_sequences: list[str] = field(default_factory=list)
     stream: bool = False
 
     def __post_init__(self) -> None:
@@ -50,7 +50,7 @@ class Request:
     timestamp: float = field(default_factory=lambda: datetime.now().timestamp())
     priority: int = 0
     status: RequestStatus = RequestStatus.PENDING
-    max_wait_time_ms: Optional[float] = None
+    max_wait_time_ms: float | None = None
 
     def __post_init__(self) -> None:
         """Validate request."""
@@ -70,7 +70,7 @@ class GenerationResult:
     tokens_used: int
     latency_ms: float
     model: str
-    metadata: Dict[str, Any] = field(default_factory=dict)
+    metadata: dict[str, Any] = field(default_factory=dict)
 
 
 @dataclass
@@ -78,8 +78,8 @@ class Response:
     """Response to an inference request."""
 
     request_id: str
-    result: Optional[GenerationResult] = None
-    error: Optional[str] = None
+    result: GenerationResult | None = None
+    error: str | None = None
     status: RequestStatus = RequestStatus.COMPLETED
 
     @property

@@ -1,11 +1,12 @@
 """Pytest configuration and fixtures."""
 
-import pytest
+from collections.abc import AsyncGenerator
 from pathlib import Path
-from typing import AsyncGenerator
 
-from llm_inference_engine.integration import OllamaClient
+import pytest
+
 from llm_inference_engine.config import InferenceConfig, OllamaConfig
+from llm_inference_engine.integration import OllamaClient
 
 
 @pytest.fixture
