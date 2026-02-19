@@ -26,7 +26,7 @@ class BenchmarkReporter:
             "",
             self._create_performance_table(),
             "",
-            "## Memory Usage",
+            "## Client Memory Usage (Benchmark Runner RSS)",
             "",
             self._create_memory_table(),
             "",
@@ -68,10 +68,11 @@ class BenchmarkReporter:
         """Create memory section markdown table."""
         rows = ["| Model | Baseline MB | Peak MB | Delta MB |", "|---|---:|---:|---:|"]
         for item in self._get_rows():
-            delta = item["memory_peak_mb"] - item["memory_baseline_mb"]
+            baseline_mb = item.get("client_memory_baseline_mb", item["memory_baseline_mb"])
+            peak_mb = item.get("client_memory_peak_mb", item["memory_peak_mb"])
+            delta = peak_mb - baseline_mb
             rows.append(
-                f"| {item['model_name']} | {item['memory_baseline_mb']:.2f} | "
-                f"{item['memory_peak_mb']:.2f} | {delta:.2f} |"
+                f"| {item['model_name']} | {baseline_mb:.2f} | {peak_mb:.2f} | {delta:.2f} |"
             )
         return "\n".join(rows)
 

@@ -214,6 +214,8 @@ class BenchmarkResult:
             "total_latency_ms": self.total_latency_ms,
             "memory_peak_mb": self.memory_peak_mb,
             "memory_baseline_mb": self.memory_baseline_mb,
+            "client_memory_peak_mb": self.memory_peak_mb,
+            "client_memory_baseline_mb": self.memory_baseline_mb,
             "generated_text": self.generated_text,
             "prompt_tokens": self.prompt_tokens,
             "completion_tokens": self.completion_tokens,
@@ -229,8 +231,10 @@ class BenchmarkResult:
             tokens_per_second=float(data["tokens_per_second"]),
             time_to_first_token_ms=float(data["time_to_first_token_ms"]),
             total_latency_ms=float(data["total_latency_ms"]),
-            memory_peak_mb=float(data["memory_peak_mb"]),
-            memory_baseline_mb=float(data["memory_baseline_mb"]),
+            memory_peak_mb=float(data.get("client_memory_peak_mb", data["memory_peak_mb"])),
+            memory_baseline_mb=float(
+                data.get("client_memory_baseline_mb", data["memory_baseline_mb"])
+            ),
             generated_text=str(data["generated_text"]),
             prompt_tokens=int(data["prompt_tokens"]),
             completion_tokens=int(data["completion_tokens"]),
