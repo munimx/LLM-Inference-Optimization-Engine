@@ -4,6 +4,7 @@ from __future__ import annotations
 
 import asyncio
 import json
+import re
 from dataclasses import asdict
 from pathlib import Path
 from statistics import mean
@@ -21,6 +22,11 @@ logger = structlog.get_logger(__name__)
 
 class BenchmarkRunner:
     """Execute benchmark measurements for models."""
+
+    _QUANTIZATION_PATTERN = re.compile(
+        r"(q(?:2|3|4|5|6|8)[_-]?(?:k(?:[_-]?[sm])?|0|1)|fp16|f16)",
+        re.IGNORECASE,
+    )
 
     def __init__(self, client: OllamaClient, config: BenchmarkConfig) -> None:
         """Initialize benchmark runner."""
@@ -125,10 +131,12 @@ class BenchmarkRunner:
 
     def _extract_quantization(self, model_name: str) -> str:
         """Extract quantization suffix from model name."""
-        if "-q" in model_name:
-            return model_name.split("-")[-1]
-        if ":q" in model_name:
-            return model_name.split(":")[-1]
+        match = self._QUANTIZATION_PATTERN.search(model_name)
+        if match is not None:
+            token = match.group(1).lower().replace("-", "_")
+            if token == "f16":
+                return "fp16"
+            return token
         return "unknown"
 
 

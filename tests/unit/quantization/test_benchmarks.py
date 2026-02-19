@@ -126,3 +126,9 @@ async def test_performance_suite_respects_model_filter(
     result_rows = payload["results"]
     assert len(result_rows) == 1
     assert result_rows[0]["model_name"] == "model-b-q4_0"
+
+
+def test_extract_quantization_handles_fp16_variant(mock_client: AsyncMock) -> None:
+    config = BenchmarkConfig(prompt="test", max_tokens=8, num_runs=1, warmup_runs=0)
+    runner = BenchmarkRunner(client=mock_client, config=config)
+    assert runner._extract_quantization("mistral:7b-fp16") == "fp16"
