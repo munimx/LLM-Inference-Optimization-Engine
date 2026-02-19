@@ -104,7 +104,7 @@ class QuantizationMapper:
         """Calculate model score based on weighted preference objective."""
         speed = min((model.tokens_per_second or 0.0) / 100.0, 1.0)
         quality = model.quality_score or 0.0
-        memory_efficiency = 1.0 / max(model.memory_estimate_gb, 0.001)
+        memory_efficiency = 1.0 / (1.0 + max(model.memory_estimate_gb, 0.0))
         if preference.priority == PreferencePriority.SPEED:
             return (0.65 * speed) + (0.2 * quality) + (0.15 * memory_efficiency)
         if preference.priority == PreferencePriority.BALANCED:

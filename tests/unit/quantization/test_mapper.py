@@ -76,3 +76,38 @@ def test_select_model_no_candidates(models: list[QuantizedModelInfo]) -> None:
                 min_tokens_per_second=1000.0,
             )
         )
+
+
+def test_quality_priority_not_overridden_by_tiny_memory() -> None:
+    mapper = QuantizationMapper(
+        models=[
+            QuantizedModelInfo(
+                name="model-a-q4_0",
+                family="model-a",
+                quantization=QuantizationLevel.Q4_0,
+                size_bytes=500_000_000,
+                memory_estimate_gb=0.2,
+                parameters=None,
+                context_length=4096,
+                quality_tier=QualityTier.ACCEPTABLE,
+                tokens_per_second=10.0,
+                quality_score=0.2,
+            ),
+            QuantizedModelInfo(
+                name="model-a-q8_0",
+                family="model-a",
+                quantization=QuantizationLevel.Q8_0,
+                size_bytes=4_000_000_000,
+                memory_estimate_gb=4.0,
+                parameters=None,
+                context_length=4096,
+                quality_tier=QualityTier.EXCELLENT,
+                tokens_per_second=10.0,
+                quality_score=0.95,
+            ),
+        ]
+    )
+    selected = mapper.select_model(
+        UserPreference(priority=PreferencePriority.QUALITY, model_family="model-a")
+    )
+    assert selected.name == "model-a-q8_0"
