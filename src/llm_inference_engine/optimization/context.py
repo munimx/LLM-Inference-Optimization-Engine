@@ -5,6 +5,7 @@ request configuration, accounting for the model's maximum supported
 context length and the number of tokens already used by the prompt.
 """
 
+import functools
 from dataclasses import dataclass
 
 import structlog
@@ -94,17 +95,29 @@ class ContextWindowManager:
         if context_registry:
             self._registry.update(context_registry)
         self._fallback = fallback_context_window
+        # Pre-sort keys by descending length so the first prefix match is
+        # always the longest one — O(1) cached lookup after the first call.
+        self._sorted_families: list[tuple[str, int]] = sorted(
+            self._registry.items(), key=lambda kv: len(kv[0]), reverse=True
+        )
+        # Wrap the lookup in a per-instance LRU cache so repeated model
+        # lookups are O(1) after the first call.
+        self.get_max_context_tokens = functools.lru_cache(maxsize=256)(
+            self._get_max_context_tokens_uncached
+        )
 
     # ------------------------------------------------------------------
     # Public API
     # ------------------------------------------------------------------
 
-    def get_max_context_tokens(self, model: str) -> int:
-        """Return the maximum context window for *model*.
+    def _get_max_context_tokens_uncached(self, model: str) -> int:
+        """Return the maximum context window for *model* (uncached).
 
-        Matching is performed by checking whether any key in the registry
-        is a prefix of the model name (case-insensitive).  The longest
-        matching prefix wins.
+        Called via the per-instance LRU-cached wrapper
+        :meth:`get_max_context_tokens`.  Uses a pre-sorted list of
+        ``(family, tokens)`` pairs (longest prefix first) so the first
+        match found is always the most specific one, avoiding O(n) full
+        scans on repeated lookups.
 
         Args:
             model: Ollama model tag (e.g. ``"llama3.1:8b"``).
@@ -113,13 +126,9 @@ class ContextWindowManager:
             Maximum context window in tokens.
         """
         model_lower = model.lower()
-        best_match: str | None = None
-        for family in self._registry:
+        for family, tokens in self._sorted_families:
             if model_lower.startswith(family.lower()):
-                if best_match is None or len(family) > len(best_match):
-                    best_match = family
-        if best_match is not None:
-            return self._registry[best_match]
+                return tokens
         logger.warning("context_window_unknown", model=model, fallback=self._fallback)
         return self._fallback
 
@@ -203,6 +212,12 @@ class ContextWindowManager:
         if context_tokens <= 0:
             raise ValueError("context_tokens must be positive")
         self._registry[model_prefix] = context_tokens
+        # Rebuild sorted list and clear cached lookups so the new entry
+        # is visible immediately.
+        self._sorted_families = sorted(
+            self._registry.items(), key=lambda kv: len(kv[0]), reverse=True
+        )
+        self.get_max_context_tokens.cache_clear()
         logger.info(
             "model_registered",
             model_prefix=model_prefix,
