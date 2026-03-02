@@ -2,6 +2,7 @@
 
 import asyncio
 import json
+import random
 from typing import Any
 
 import httpx
@@ -25,6 +26,7 @@ class OllamaClient:
         port: int = 11434,
         timeout: float = 300.0,
         max_retries: int = 3,
+        retry_backoff_seconds: float = 1.0,
     ) -> None:
         """Initialize Ollama client.
 
@@ -33,10 +35,14 @@ class OllamaClient:
             port: Ollama service port
             timeout: Request timeout in seconds
             max_retries: Maximum number of retry attempts
+            retry_backoff_seconds: Base delay (seconds) for exponential
+                backoff.  Actual sleep = ``base × 2^attempt + jitter``
+                where jitter is a uniform random value in [0, 1).
         """
         self.base_url = f"http://{host}:{port}"
         self.timeout = timeout
         self.max_retries = max_retries
+        self._retry_backoff = retry_backoff_seconds
         self._client: httpx.AsyncClient | None = None
         logger.info("ollama_client_initialized", base_url=self.base_url)
 
@@ -229,7 +235,7 @@ class OllamaClient:
                     error=str(e),
                     wait_time=2 ** attempt,
                 )
-                await asyncio.sleep(2 ** attempt)
+                await asyncio.sleep(self._retry_backoff * (2**attempt) + random.uniform(0, 1))
 
             except httpx.HTTPStatusError as e:
                 status_code = e.response.status_code
@@ -250,7 +256,7 @@ class OllamaClient:
                     status=status_code,
                     wait_time=2 ** attempt,
                 )
-                await asyncio.sleep(2 ** attempt)
+                await asyncio.sleep(self._retry_backoff * (2**attempt) + random.uniform(0, 1))
 
             except httpx.RequestError as e:
                 if attempt == self.max_retries - 1:
@@ -266,7 +272,7 @@ class OllamaClient:
                     error=str(e),
                     wait_time=2 ** attempt,
                 )
-                await asyncio.sleep(2 ** attempt)
+                await asyncio.sleep(self._retry_backoff * (2**attempt) + random.uniform(0, 1))
 
         raise OllamaConnectionError("Unexpected error: max retries exhausted")
 

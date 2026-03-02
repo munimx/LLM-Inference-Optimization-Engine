@@ -66,6 +66,8 @@ def create_app(config: InferenceConfig | None = None) -> FastAPI:
             host=config.ollama.host,
             port=config.ollama.port,
             timeout=config.ollama.timeout_seconds,
+            max_retries=config.ollama.retry_count,
+            retry_backoff_seconds=config.ollama.retry_backoff_seconds,
         )
         await ollama_client.connect()
 
