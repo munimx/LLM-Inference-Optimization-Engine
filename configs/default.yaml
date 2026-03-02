@@ -15,6 +15,23 @@ server:
   reload: false
   log_level: INFO
 
+# Semantic Cache Configuration
+cache:
+  enabled: true
+  max_size: 256        # LRU eviction after this many entries
+  ttl_seconds: 300.0   # entries older than this are treated as misses
+
+# Scheduling Configuration
+scheduling:
+  policy: fcfs                   # fcfs | sjf | priority | token_budget
+  max_requests_per_batch: 8
+  max_tokens_per_batch: 0        # 0 = unlimited
+
+# Memory / Admission Control Configuration
+memory:
+  limit_gb: 14.0       # hard memory limit (M2 Air default)
+  safety_margin: 1.1   # +10% over raw estimates
+
 # Model Configurations
 models:
   mistral:

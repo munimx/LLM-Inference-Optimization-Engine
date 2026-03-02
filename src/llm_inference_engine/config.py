@@ -25,6 +25,32 @@ class OllamaConfig:
 
 
 @dataclass
+class CacheConfig:
+    """Configuration for the semantic response cache."""
+
+    enabled: bool = True
+    max_size: int = 256
+    ttl_seconds: float = 300.0
+
+
+@dataclass
+class SchedulingConfig:
+    """Configuration for the request scheduler."""
+
+    policy: str = "fcfs"
+    max_requests_per_batch: int = 8
+    max_tokens_per_batch: int = 0
+
+
+@dataclass
+class MemoryConfig:
+    """Configuration for memory-based admission control."""
+
+    limit_gb: float = 14.0
+    safety_margin: float = 1.1
+
+
+@dataclass
 class ModelConfig:
     """Configuration for a specific model."""
 
@@ -53,6 +79,9 @@ class InferenceConfig:
 
     ollama: OllamaConfig = field(default_factory=OllamaConfig)
     server: ServerConfig = field(default_factory=ServerConfig)
+    cache: CacheConfig = field(default_factory=CacheConfig)
+    scheduling: SchedulingConfig = field(default_factory=SchedulingConfig)
+    memory: MemoryConfig = field(default_factory=MemoryConfig)
     models: dict[str, ModelConfig] = field(default_factory=dict)
 
     @classmethod
@@ -98,6 +127,30 @@ class InferenceConfig:
             logger.error("config_type_error", error=str(e))
             raise ConfigurationError(f"Invalid server configuration: {e}") from e
 
+        # Parse cache config
+        cache_data = data.get("cache", {})
+        try:
+            cache_config = CacheConfig(**cache_data)
+        except TypeError as e:
+            logger.error("config_type_error", error=str(e))
+            raise ConfigurationError(f"Invalid cache configuration: {e}") from e
+
+        # Parse scheduling config
+        scheduling_data = data.get("scheduling", {})
+        try:
+            scheduling_config = SchedulingConfig(**scheduling_data)
+        except TypeError as e:
+            logger.error("config_type_error", error=str(e))
+            raise ConfigurationError(f"Invalid scheduling configuration: {e}") from e
+
+        # Parse memory config
+        memory_data = data.get("memory", {})
+        try:
+            memory_config = MemoryConfig(**memory_data)
+        except TypeError as e:
+            logger.error("config_type_error", error=str(e))
+            raise ConfigurationError(f"Invalid memory configuration: {e}") from e
+
         # Parse model configs
         models_data = data.get("models", {})
         if not isinstance(models_data, dict):
@@ -126,6 +179,9 @@ class InferenceConfig:
         return cls(
             ollama=ollama_config,
             server=server_config,
+            cache=cache_config,
+            scheduling=scheduling_config,
+            memory=memory_config,
             models=models,
         )
 
@@ -162,6 +218,20 @@ class InferenceConfig:
                 "reload": self.server.reload,
                 "log_level": self.server.log_level,
             },
+            "cache": {
+                "enabled": self.cache.enabled,
+                "max_size": self.cache.max_size,
+                "ttl_seconds": self.cache.ttl_seconds,
+            },
+            "scheduling": {
+                "policy": self.scheduling.policy,
+                "max_requests_per_batch": self.scheduling.max_requests_per_batch,
+                "max_tokens_per_batch": self.scheduling.max_tokens_per_batch,
+            },
+            "memory": {
+                "limit_gb": self.memory.limit_gb,
+                "safety_margin": self.memory.safety_margin,
+            },
             "models": {
                 name: {
                     "name": config.name,
@@ -194,6 +264,9 @@ def load_config(config_path: Path | None = None) -> InferenceConfig:
 
 __all__ = [
     "OllamaConfig",
+    "CacheConfig",
+    "SchedulingConfig",
+    "MemoryConfig",
     "ModelConfig",
     "ServerConfig",
     "InferenceConfig",
