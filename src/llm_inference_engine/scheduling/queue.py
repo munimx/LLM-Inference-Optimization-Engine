@@ -45,6 +45,7 @@ class RequestQueue:
             maxsize=maxsize
         )
         self._cancelled: set[str] = set()
+        self._queued_ids: set[str] = set()
         self._sequence: int = 0
         self._lock: asyncio.Lock = asyncio.Lock()
         logger.info("request_queue_initialized", maxsize=maxsize)
@@ -63,6 +64,7 @@ class RequestQueue:
         async with self._lock:
             seq = self._sequence
             self._sequence += 1
+            self._queued_ids.add(request.request_id)
 
         # Higher user priority → smaller sort key → dequeued first.
         sort_key = (-request.priority, seq)
@@ -96,6 +98,7 @@ class RequestQueue:
 
             if item.request.request_id in self._cancelled:
                 self._cancelled.discard(item.request.request_id)
+                self._queued_ids.discard(item.request.request_id)
                 self._queue.task_done()
                 logger.debug(
                     "cancelled_request_skipped",
@@ -104,6 +107,7 @@ class RequestQueue:
                 continue
 
             self._queue.task_done()
+            self._queued_ids.discard(item.request.request_id)
             logger.debug(
                 "request_dequeued",
                 request_id=item.request.request_id,
@@ -121,21 +125,30 @@ class RequestQueue:
             item = await self._queue.get()
             if item.request.request_id in self._cancelled:
                 self._cancelled.discard(item.request.request_id)
+                self._queued_ids.discard(item.request.request_id)
                 self._queue.task_done()
                 continue
             self._queue.task_done()
+            self._queued_ids.discard(item.request.request_id)
             return item.request
 
     def cancel(self, request_id: str) -> bool:
         """Mark a request as cancelled so it is skipped on dequeue.
+
+        Only requests that are currently enqueued (tracked in
+        ``_queued_ids``) are accepted.  This bounds the ``_cancelled``
+        set to at most the current queue depth, preventing unbounded
+        growth from stale or phantom cancellation calls.
 
         Args:
             request_id: The ID of the request to cancel.
 
         Returns:
             ``True`` if the request was newly marked as cancelled,
-            ``False`` if it was already cancelled.
+            ``False`` if it was already cancelled or not in the queue.
         """
+        if request_id not in self._queued_ids:
+            return False
         if request_id in self._cancelled:
             return False
         self._cancelled.add(request_id)
