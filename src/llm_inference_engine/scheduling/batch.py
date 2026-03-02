@@ -36,6 +36,7 @@ class Batch:
     max_requests: int = 16
     max_tokens: int = 0  # 0 = unlimited
     requests: list[Request] = field(default_factory=list)
+    _total_tokens: int = field(default=0, init=False, repr=False, compare=False)
 
     # ------------------------------------------------------------------
     # Derived properties
@@ -50,10 +51,10 @@ class Batch:
     def total_tokens(self) -> int:
         """Sum of ``max_tokens`` across all requests in the batch.
 
-        Uses ``generation_config.max_tokens`` as a proxy for the token
-        budget of each request.
+        Maintained as an incremental counter in :meth:`add` — O(1) access
+        instead of O(n) summation on every call.
         """
-        return sum(r.generation_config.max_tokens for r in self.requests)
+        return self._total_tokens
 
     @property
     def is_empty(self) -> bool:
@@ -114,6 +115,7 @@ optimization.memory.MemoryEstimator`.
                 f"tokens={self.total_tokens}/{self.max_tokens or '∞'})"
             )
         self.requests.append(request)
+        self._total_tokens += request.generation_config.max_tokens
         logger.debug(
             "request_added_to_batch",
             batch_id=self.batch_id,
