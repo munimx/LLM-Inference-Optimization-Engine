@@ -421,6 +421,118 @@ async def run_s6_throughput(
     }
 
 
+async def run_s7_streaming(
+    client: httpx.AsyncClient, model: str, prompt: str, max_tokens: int = 80
+) -> dict[str, Any]:
+    """S7: Streaming — measure TTFT and total time vs non-streaming."""
+    print(f"    [S7 streaming] \"{prompt[:40]}...\"")
+
+    # Non-streaming baseline via engine
+    non_stream_samples: list[float] = []
+    for _ in range(RUNS):
+        s = await safe_engine(client, model, f"{prompt} [ns{len(non_stream_samples)}]", max_tokens)
+        if not s.error:
+            non_stream_samples.append(s.latency_ms)
+
+    # Streaming via engine — measure TTFT and total
+    ttft_samples: list[float] = []
+    total_samples: list[float] = []
+    for i in range(RUNS):
+        t0 = time.perf_counter()
+        first_token_time: float | None = None
+        try:
+            async with client.stream(
+                "POST",
+                f"{ENGINE_URL}/completions",
+                json={"model": model, "prompt": f"{prompt} [st{i}]", "max_tokens": max_tokens, "stream": True},
+                timeout=REQUEST_TIMEOUT,
+            ) as resp:
+                async for line in resp.aiter_lines():
+                    if line.startswith("data: ") and line != "data: [DONE]":
+                        if first_token_time is None:
+                            first_token_time = (time.perf_counter() - t0) * 1000
+            total_ms = (time.perf_counter() - t0) * 1000
+            if first_token_time is not None:
+                ttft_samples.append(first_token_time)
+                total_samples.append(total_ms)
+        except Exception as exc:
+            print(f"      streaming error: {str(exc)[:60]}")
+
+    mean_ttft = statistics.mean(ttft_samples) if ttft_samples else 0.0
+    mean_total = statistics.mean(total_samples) if total_samples else 0.0
+    mean_non_stream = statistics.mean(non_stream_samples) if non_stream_samples else 0.0
+
+    print(f"      TTFT={mean_ttft:.0f}ms  stream_total={mean_total:.0f}ms  non_stream={mean_non_stream:.0f}ms")
+
+    return {
+        "model": model,
+        "prompt": prompt[:60],
+        "mean_ttft_ms": round(mean_ttft, 1),
+        "mean_stream_total_ms": round(mean_total, 1),
+        "mean_non_stream_ms": round(mean_non_stream, 1),
+        "n": len(ttft_samples),
+    }
+
+
+async def run_s8_chat(
+    client: httpx.AsyncClient, model: str, max_tokens: int = 80
+) -> dict[str, Any]:
+    """S8: Chat completions — engine /chat/completions vs direct Ollama /api/chat."""
+    messages = [
+        {"role": "system", "content": "You are a helpful assistant."},
+        {"role": "user", "content": "Explain what a hash table is in 2 sentences."},
+    ]
+    print(f"    [S8 chat] {model}")
+
+    # Direct Ollama /api/chat
+    ollama_samples: list[float] = []
+    for _ in range(RUNS):
+        t0 = time.perf_counter()
+        try:
+            resp = await client.post(
+                f"{OLLAMA_URL}/api/chat",
+                json={"model": model, "messages": messages, "stream": False, "options": {"num_predict": max_tokens}},
+                timeout=REQUEST_TIMEOUT,
+            )
+            resp.raise_for_status()
+            ms = (time.perf_counter() - t0) * 1000
+            ollama_samples.append(ms)
+        except Exception as exc:
+            print(f"      ollama chat error: {str(exc)[:60]}")
+
+    # Engine /chat/completions
+    engine_samples: list[float] = []
+    for i in range(RUNS):
+        msgs = [messages[0], {"role": "user", "content": f"Explain what a hash table is in 2 sentences. [r{i}]"}]
+        t0 = time.perf_counter()
+        try:
+            resp = await client.post(
+                f"{ENGINE_URL}/chat/completions",
+                json={"model": model, "messages": msgs, "max_tokens": max_tokens},
+                timeout=REQUEST_TIMEOUT,
+            )
+            resp.raise_for_status()
+            ms = (time.perf_counter() - t0) * 1000
+            engine_samples.append(ms)
+        except Exception as exc:
+            print(f"      engine chat error: {str(exc)[:60]}")
+
+    mean_ollama = statistics.mean(ollama_samples) if ollama_samples else 0.0
+    mean_engine = statistics.mean(engine_samples) if engine_samples else 0.0
+    overhead_pct = ((mean_engine - mean_ollama) / mean_ollama * 100) if mean_ollama > 0 else 0.0
+
+    print(f"      ollama={mean_ollama:.0f}ms  engine={mean_engine:.0f}ms  overhead={overhead_pct:+.0f}%")
+
+    return {
+        "model": model,
+        "mean_ollama_ms": round(mean_ollama, 1),
+        "mean_engine_ms": round(mean_engine, 1),
+        "overhead_pct": round(overhead_pct, 1),
+        "n_ollama": len(ollama_samples),
+        "n_engine": len(engine_samples),
+    }
+
+
 # ---------------------------------------------------------------------------
 # Report generation
 # ---------------------------------------------------------------------------
@@ -514,6 +626,34 @@ def generate_report(results: dict[str, Any]) -> str:
                 break  # one row per model per scenario
     lines.append("")
 
+    # S7: Streaming TTFT
+    if results.get("s7_streaming"):
+        lines.append("## Streaming — Time to First Token (S7)")
+        lines.append("")
+        lines.append("| Model | TTFT (ms) | Stream total (ms) | Non-stream (ms) |")
+        lines.append("|---|---|---|---|")
+        for r in results["s7_streaming"]:
+            lines.append(
+                f"| `{r['model']}` | **{r['mean_ttft_ms']:.0f}** | "
+                f"{r['mean_stream_total_ms']:.0f} | {r['mean_non_stream_ms']:.0f} |"
+            )
+        lines.append("")
+        lines.append("> TTFT = time until the first SSE chunk arrives. Stream total includes all chunks + `[DONE]`.")
+        lines.append("")
+
+    # S8: Chat completions
+    if results.get("s8_chat"):
+        lines.append("## Chat Completions Overhead (S8)")
+        lines.append("")
+        lines.append("| Model | Ollama /api/chat (ms) | Engine /chat/completions (ms) | Overhead |")
+        lines.append("|---|---|---|---|")
+        for r in results["s8_chat"]:
+            lines.append(
+                f"| `{r['model']}` | {r['mean_ollama_ms']:.0f} | "
+                f"{r['mean_engine_ms']:.0f} | {r['overhead_pct']:+.0f}% |"
+            )
+        lines.append("")
+
     # When to use
     lines.append("## When to Use This Engine")
     lines.append("")
@@ -569,6 +709,8 @@ async def main() -> None:
         "s4_hit_rate": [],
         "s5_concurrent": [],
         "s6_throughput": [],
+        "s7_streaming": [],
+        "s8_chat": [],
         "s2_medium_baselines": {},
     }
 
@@ -634,6 +776,25 @@ async def main() -> None:
             r = await run_s6_throughput(client, model, n_requests=10)
             results["s6_throughput"].append(r)
 
+        # ---- S7: Streaming TTFT ------------------------------------------
+        print("\n" + "─" * 60)
+        print("S7: Streaming — time to first token")
+        print("─" * 60)
+        stream_prompt = "Explain what a linked list is."
+        for model in ALL_MODELS + [DEEPSEEK]:
+            print(f"\n  Model: {model}")
+            r = await run_s7_streaming(client, model, stream_prompt, MEDIUM_MAX_TOKENS)
+            results["s7_streaming"].append(r)
+
+        # ---- S8: Chat completions ----------------------------------------
+        print("\n" + "─" * 60)
+        print("S8: Chat completions (/chat/completions)")
+        print("─" * 60)
+        for model in ALL_MODELS + [DEEPSEEK]:
+            print(f"\n  Model: {model}")
+            r = await run_s8_chat(client, model, MEDIUM_MAX_TOKENS)
+            results["s8_chat"].append(r)
+
     # Write outputs
     out_dir = Path("docs")
     out_dir.mkdir(exist_ok=True)
@@ -662,6 +823,14 @@ async def main() -> None:
     print("\nMixed workload speedup (60% hit rate):")
     for r in results["s4_hit_rate"]:
         print(f"  {r['model']:<22} {r['wall_speedup']:.2f}x  ({r['engine_wall_ms']:.0f} vs {r['baseline_wall_ms']:.0f} ms wall)")
+
+    print("\nStreaming TTFT:")
+    for r in results["s7_streaming"]:
+        print(f"  {r['model']:<22} TTFT={r['mean_ttft_ms']:.0f}ms  total={r['mean_stream_total_ms']:.0f}ms")
+
+    print("\nChat completions overhead:")
+    for r in results["s8_chat"]:
+        print(f"  {r['model']:<22} ollama={r['mean_ollama_ms']:.0f}ms  engine={r['mean_engine_ms']:.0f}ms  ({r['overhead_pct']:+.0f}%)")
 
 
 if __name__ == "__main__":
