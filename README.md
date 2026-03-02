@@ -113,7 +113,7 @@ All settings are in `configs/default.yaml`. The key knobs:
 
 - **SSE Streaming** — `"stream": true` proxies Ollama's token-by-token output via Server-Sent Events, with cache integration and Prometheus instrumentation
 - **Chat completions** — `/chat/completions` uses Ollama's native `/api/chat` with structured messages
-- **Exact-match cache** — LRU cache keyed on `(model, prompt, max_tokens, temperature)`; case-insensitive and whitespace-normalised. Streaming responses also cached.
+- **Exact-match cache** — LRU cache keyed on `(model, key_string)` where the key string is built by the aggregator as `prompt\x00mt=<max_tokens>\x00t=<temperature>` with case-insensitive and leading/trailing whitespace normalisation. Streaming responses also cached.
 - **Semantic cache** — embedding-based similarity matching via Ollama's `/api/embed` (opt-in via `cache.mode: "semantic"`)
 - **Memory-based admission control** — adaptive throttler rejects requests with HTTP 503 when estimated memory pressure exceeds configured limit
 - **Request coalescing** — identical in-flight chat requests are deduplicated
