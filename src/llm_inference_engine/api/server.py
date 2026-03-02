@@ -93,7 +93,7 @@ def create_app(config: InferenceConfig | None = None) -> FastAPI:
         await ollama_client.connect()
 
         # Build the cache based on configured mode.
-        cache = None
+        cache: Any = None
         if config.cache.enabled:
             if config.cache.mode == "semantic":
                 embed_model = config.cache.embedding_model
@@ -176,15 +176,16 @@ def create_app(config: InferenceConfig | None = None) -> FastAPI:
 
     # --- API-key authentication middleware ---
     if config.auth.enabled:
-        from starlette.middleware.base import BaseHTTPMiddleware
+        from starlette.middleware.base import BaseHTTPMiddleware, RequestResponseEndpoint
         from starlette.requests import Request as StarletteRequest
         from starlette.responses import JSONResponse
+        from starlette.responses import Response as StarletteResponse
 
         _public_paths = {"/health", "/docs", "/redoc", "/openapi.json", "/metrics/prometheus"}
         _valid_keys = frozenset(config.auth.api_keys)
 
         class _APIKeyMiddleware(BaseHTTPMiddleware):
-            async def dispatch(self, request: StarletteRequest, call_next):  # type: ignore[override]
+            async def dispatch(self, request: StarletteRequest, call_next: RequestResponseEndpoint) -> StarletteResponse:
                 if request.url.path in _public_paths:
                     return await call_next(request)
                 auth_header = request.headers.get("authorization", "")
@@ -250,7 +251,7 @@ def create_app(config: InferenceConfig | None = None) -> FastAPI:
     @app.get("/metrics/prometheus", tags=["System"])
     async def prometheus_metrics() -> StreamingResponse:
         """Return Prometheus-format metrics for scraping."""
-        from prometheus_client import generate_latest, CONTENT_TYPE_LATEST
+        from prometheus_client import CONTENT_TYPE_LATEST, generate_latest
 
         # Update gauges from current state
         try:
@@ -332,12 +333,12 @@ def create_app(config: InferenceConfig | None = None) -> FastAPI:
                 ),
                 timeout=timeout,
             )
-        except (TimeoutError, asyncio.TimeoutError):
+        except TimeoutError:
             REQUESTS_TOTAL.labels(model=body.model, endpoint="completions", status="timeout").inc()
             raise HTTPException(
                 status_code=status.HTTP_504_GATEWAY_TIMEOUT,
                 detail=f"Request timed out after {timeout}s",
-            )
+            ) from None
 
         cb: CircuitBreaker = app.state.circuit_breaker
         if response.result is None:
@@ -428,12 +429,12 @@ def create_app(config: InferenceConfig | None = None) -> FastAPI:
                 ),
                 timeout=timeout,
             )
-        except (TimeoutError, asyncio.TimeoutError):
+        except TimeoutError:
             REQUESTS_TOTAL.labels(model=body.model, endpoint="chat", status="timeout").inc()
             raise HTTPException(
                 status_code=status.HTTP_504_GATEWAY_TIMEOUT,
                 detail=f"Request timed out after {timeout}s",
-            )
+            ) from None
 
         cb: CircuitBreaker = app.state.circuit_breaker
         if response.result is None:

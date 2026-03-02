@@ -28,7 +28,7 @@ class TestEmbeddingCache:
     async def test_miss_different_prompt(self):
         cache = EmbeddingCache(_make_embed_fn(), similarity_threshold=0.99)
         await cache.put("m", "hello", "world")
-        result = await cache.get("m", "completely different text")
+        await cache.get("m", "completely different text")
         # May or may not hit depending on hash collision — either way no crash
         assert cache.size == 1
 

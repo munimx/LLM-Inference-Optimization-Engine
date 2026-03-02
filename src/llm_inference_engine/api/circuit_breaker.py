@@ -11,14 +11,14 @@ Implements the standard closed → open → half-open pattern:
 """
 
 import time
-from enum import Enum
+from enum import StrEnum
 
 import structlog
 
 logger = structlog.get_logger(__name__)
 
 
-class CircuitState(str, Enum):
+class CircuitState(StrEnum):
     CLOSED = "closed"
     OPEN = "open"
     HALF_OPEN = "half_open"

@@ -15,6 +15,7 @@ scheduler.Scheduler`.
 """
 
 import asyncio
+import time
 import uuid
 from typing import Any
 
@@ -195,8 +196,6 @@ RequestCoalescer` for deduplicating identical in-flight requests.
         Returns:
             A :class:`~llm_inference_engine.core.types.Response`.
         """
-        import time
-
         self._total_requests += 1
 
         # Build a cache key from the messages hash
@@ -209,11 +208,12 @@ RequestCoalescer` for deduplicating identical in-flight requests.
 
         # Coalesce identical in-flight chat requests
         if self._coalescer is not None:
-            return await self._coalescer.coalesce(
+            result: Response = await self._coalescer.coalesce(
                 model,
                 cache_key,
                 lambda: self._do_chat(model, messages, cache_key, max_tokens, temperature, top_p, stop),
             )
+            return result
 
         return await self._do_chat(model, messages, cache_key, max_tokens, temperature, top_p, stop)
 

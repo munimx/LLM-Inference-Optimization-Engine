@@ -473,9 +473,11 @@ class OllamaClient:
         Returns:
             Embedding vector as a list of floats.
         """
-        client = await self._get_client()
+        if self._client is None:
+            await self.connect()
+        assert self._client is not None
         payload: dict[str, Any] = {"model": model, "input": text}
-        response = await client.post(
+        response = await self._client.post(
             f"{self.base_url}/api/embed",
             json=payload,
             timeout=self.timeout,
@@ -483,10 +485,10 @@ class OllamaClient:
         response.raise_for_status()
         data = response.json()
         # Ollama returns {"embeddings": [[...]]} — take first vector
-        embeddings = data.get("embeddings", [])
+        embeddings: list[Any] = data.get("embeddings", [])
         if embeddings and isinstance(embeddings[0], list):
-            return embeddings[0]
-        return embeddings
+            return list(embeddings[0])
+        return list(embeddings)
 
     async def health_check(self) -> dict[str, Any]:
         try:

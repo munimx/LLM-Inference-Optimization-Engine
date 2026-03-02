@@ -8,9 +8,8 @@ Covers the critical paths that were untested after Round 1:
 """
 
 import json
-from unittest.mock import AsyncMock, MagicMock, patch
+from unittest.mock import AsyncMock, MagicMock
 
-import pytest
 from fastapi.testclient import TestClient
 
 from llm_inference_engine.api.dependencies import (

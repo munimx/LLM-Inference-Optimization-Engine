@@ -47,7 +47,7 @@ class TestRequestCoalescer:
             await asyncio.sleep(0.01)
             return f"result-{call_count}"
 
-        results = await asyncio.gather(
+        await asyncio.gather(
             coalescer.coalesce("m", "prompt_a", producer),
             coalescer.coalesce("m", "prompt_b", producer),
         )

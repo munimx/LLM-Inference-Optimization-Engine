@@ -90,7 +90,7 @@ class InferenceBackend(abc.ABC):
             f"{type(self).__name__} does not support streaming"
         )
         # Make this an async generator so the type signature is satisfied
-        yield  # type: ignore[misc]  # pragma: no cover
+        yield  # pragma: no cover
 
     @abc.abstractmethod
     async def is_available(self) -> bool:
@@ -100,7 +100,7 @@ class InferenceBackend(abc.ABC):
         """Return available model names (if the backend supports listing)."""
         return []
 
-    async def close(self) -> None:
+    async def close(self) -> None:  # noqa: B027
         """Release resources held by the backend."""
 
 

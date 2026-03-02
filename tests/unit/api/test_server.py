@@ -4,7 +4,12 @@ from unittest.mock import AsyncMock, MagicMock
 
 from fastapi.testclient import TestClient
 
-from llm_inference_engine.api.dependencies import get_aggregator, get_cache, get_ollama_client, get_throttler
+from llm_inference_engine.api.dependencies import (
+    get_aggregator,
+    get_cache,
+    get_ollama_client,
+    get_throttler,
+)
 from llm_inference_engine.api.server import VERSION, create_app
 from llm_inference_engine.config import InferenceConfig
 from llm_inference_engine.core.types import (

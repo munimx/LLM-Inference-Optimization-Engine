@@ -10,6 +10,7 @@ from __future__ import annotations
 
 import asyncio
 import hashlib
+from collections.abc import Awaitable, Callable
 from typing import Any
 
 import structlog
@@ -38,7 +39,7 @@ class RequestCoalescer:
         self,
         model: str,
         prompt: str,
-        producer,  # noqa: ANN001  — Callable[[], Awaitable[T]]
+        producer: Callable[[], Awaitable[Any]],
     ) -> Any:
         """Return the result of *producer*, deduplicating identical requests.
 
@@ -73,7 +74,7 @@ class RequestCoalescer:
     async def _run(
         self,
         key: str,
-        producer,  # noqa: ANN001
+        producer: Callable[[], Awaitable[Any]],
         future: asyncio.Future[Any],
     ) -> None:
         """Execute *producer* and resolve the shared future."""

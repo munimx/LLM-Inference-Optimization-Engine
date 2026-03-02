@@ -40,7 +40,7 @@ class OllamaBackend(InferenceBackend):
             max_tokens=max_tokens,
             temperature=temperature,
             top_p=top_p,
-            stop=stop,
+            stop_sequences=stop,
         )
         return BackendResult(
             text=result.get("response", ""),
@@ -66,7 +66,7 @@ class OllamaBackend(InferenceBackend):
             max_tokens=max_tokens,
             temperature=temperature,
             top_p=top_p,
-            stop=stop,
+            stop_sequences=stop,
         )
         msg = result.get("message", {})
         return BackendResult(

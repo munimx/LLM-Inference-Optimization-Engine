@@ -15,7 +15,6 @@ Speculative Sampling", 2023 (https://arxiv.org/abs/2302.01318).
 """
 
 import warnings
-
 from dataclasses import dataclass, field
 from typing import Any
 
