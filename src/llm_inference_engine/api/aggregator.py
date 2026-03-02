@@ -108,7 +108,7 @@ scheduler.Scheduler`.
 
         # Check cache first.
         if self._cache is not None:
-            cached = self._cache.get(model, prompt)
+            cached = await self._cache.get(model, prompt)
             if cached is not None:
                 return self._make_cached_response(model, prompt, cached)
 
@@ -135,7 +135,7 @@ scheduler.Scheduler`.
         for resp in responses:
             self._mapper.resolve(resp.request_id, resp)
             if self._cache is not None and resp.result is not None:
-                self._cache.put(model, prompt, resp.result.text)
+                await self._cache.put(model, prompt, resp.result.text)
 
         # Wait for our specific future.
         try:
