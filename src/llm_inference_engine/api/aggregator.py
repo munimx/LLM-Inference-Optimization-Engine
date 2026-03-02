@@ -188,8 +188,13 @@ RequestCoalescer` for deduplicating identical in-flight requests.
             responses = await self._scheduler.drain(model)
             for resp in responses:
                 await self._mapper.resolve(resp.request_id, resp)
-                # Cache using this request's prompt (only valid for single-request drain)
-                if self._cache is not None and resp.result is not None:
+                # Only cache OUR request's response — other requests in the
+                # batch have different prompts and different cache keys.
+                if (
+                    resp.request_id == request_id
+                    and self._cache is not None
+                    and resp.result is not None
+                ):
                     await self._cache.put(model, cache_prompt, resp.result.text)
 
         # Wait for our specific future.  Use a generous safety-net timeout

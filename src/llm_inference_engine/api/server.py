@@ -370,13 +370,13 @@ def create_app(config: InferenceConfig | None = None) -> FastAPI:
                 ),
                 timeout=timeout,
             )
-        except TimeoutError:
+        except TimeoutError as exc:
             await throttler.release(request_id, _REQUEST_MEMORY_ESTIMATE_GB)
             REQUESTS_TOTAL.labels(model=body.model, endpoint="completions", status="timeout").inc()
             raise HTTPException(
                 status_code=status.HTTP_504_GATEWAY_TIMEOUT,
                 detail=f"Request timed out after {timeout}s",
-            ) from None
+            ) from exc
         await throttler.release(request_id, _REQUEST_MEMORY_ESTIMATE_GB)
 
         cb: CircuitBreaker = app.state.circuit_breaker
@@ -482,13 +482,13 @@ def create_app(config: InferenceConfig | None = None) -> FastAPI:
                 ),
                 timeout=timeout,
             )
-        except TimeoutError:
+        except TimeoutError as exc:
             await throttler.release(request_id, _REQUEST_MEMORY_ESTIMATE_GB)
             REQUESTS_TOTAL.labels(model=body.model, endpoint="chat", status="timeout").inc()
             raise HTTPException(
                 status_code=status.HTTP_504_GATEWAY_TIMEOUT,
                 detail=f"Request timed out after {timeout}s",
-            ) from None
+            ) from exc
         await throttler.release(request_id, _REQUEST_MEMORY_ESTIMATE_GB)
 
         cb: CircuitBreaker = app.state.circuit_breaker
