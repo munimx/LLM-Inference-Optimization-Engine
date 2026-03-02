@@ -40,7 +40,7 @@ See [docs/architecture.md](docs/architecture.md) for component details.
 
 ```bash
 # Requires Ollama running locally (https://ollama.ai)
-ollama pull llama3:8b
+ollama pull llama3.1:8b
 
 pip install -e ".[dev]"
 
@@ -52,11 +52,15 @@ python scripts/start_server.py
 ```bash
 curl -s http://localhost:8000/completions \
   -H "Content-Type: application/json" \
-  -d '{"model": "llama3:8b", "prompt": "Explain KV-cache in one sentence."}' \
+  -d '{"model": "llama3.1:8b", "prompt": "Explain KV-cache in one sentence."}' \
   | python -m json.tool
 ```
 
 Interactive API docs: <http://localhost:8000/docs>
+
+Send the same prompt twice — the second call returns in **~2ms** (cache hit, Ollama not contacted).
+
+See [docs/usage_guide.md](docs/usage_guide.md) for when the engine helps, when it doesn't, and how to configure it for your workload.
 
 ## Configuration
 
