@@ -327,8 +327,19 @@ def create_app(config: InferenceConfig | None = None) -> FastAPI:
         if body.stream:
             REQUESTS_TOTAL.labels(model=body.model, endpoint="completions", status="stream").inc()
             cache_for_stream = app.state.cache
+            cb_for_stream: CircuitBreaker = app.state.circuit_breaker
+            throttler_for_stream: AdaptiveThrottler = app.state.throttler
+            stream_req_id = f"cmpl-stream-{uuid.uuid4().hex[:8]}"
+            await throttler_for_stream.reserve(stream_req_id, _REQUEST_MEMORY_ESTIMATE_GB)
             return StreamingResponse(
-                _stream_completion(ollama_client, body, cache=cache_for_stream),
+                _stream_completion(
+                    ollama_client, body,
+                    cache=cache_for_stream,
+                    circuit_breaker=cb_for_stream,
+                    throttler=throttler_for_stream,
+                    request_id_for_throttler=stream_req_id,
+                    memory_estimate_gb=_REQUEST_MEMORY_ESTIMATE_GB,
+                ),
                 media_type="text/event-stream",
                 headers={"Cache-Control": "no-cache", "X-Accel-Buffering": "no"},
             )
@@ -428,8 +439,19 @@ def create_app(config: InferenceConfig | None = None) -> FastAPI:
         if body.stream:
             REQUESTS_TOTAL.labels(model=body.model, endpoint="chat", status="stream").inc()
             cache_for_stream = app.state.cache
+            cb_for_stream: CircuitBreaker = app.state.circuit_breaker
+            throttler_for_stream: AdaptiveThrottler = app.state.throttler
+            stream_req_id = f"chat-stream-{uuid.uuid4().hex[:8]}"
+            await throttler_for_stream.reserve(stream_req_id, _REQUEST_MEMORY_ESTIMATE_GB)
             return StreamingResponse(
-                _stream_chat_completion(ollama_client, body, messages, cache=cache_for_stream),
+                _stream_chat_completion(
+                    ollama_client, body, messages,
+                    cache=cache_for_stream,
+                    circuit_breaker=cb_for_stream,
+                    throttler=throttler_for_stream,
+                    request_id_for_throttler=stream_req_id,
+                    memory_estimate_gb=_REQUEST_MEMORY_ESTIMATE_GB,
+                ),
                 media_type="text/event-stream",
                 headers={"Cache-Control": "no-cache", "X-Accel-Buffering": "no"},
             )
@@ -513,7 +535,14 @@ def create_app(config: InferenceConfig | None = None) -> FastAPI:
 
 
 async def _stream_completion(
-    client: OllamaClient, body: CompletionRequest, *, cache: Any = None,
+    client: OllamaClient,
+    body: CompletionRequest,
+    *,
+    cache: Any = None,
+    circuit_breaker: CircuitBreaker | None = None,
+    throttler: AdaptiveThrottler | None = None,
+    request_id_for_throttler: str | None = None,
+    memory_estimate_gb: float = 0.5,
 ) -> AsyncIterator[str]:
     """Yield SSE events for a streaming text completion.
 
@@ -529,6 +558,9 @@ async def _stream_completion(
         cached = await cache.get(body.model, cache_key)
         if cached is not None:
             CACHE_HITS.inc()
+            # Cache hit — release throttler reservation immediately
+            if throttler is not None and request_id_for_throttler is not None:
+                await throttler.release(request_id_for_throttler, memory_estimate_gb)
             event = {
                 "id": request_id,
                 "object": "text_completion",
@@ -549,47 +581,58 @@ async def _stream_completion(
     collected_text: list[str] = []
     total_tokens = 0
 
-    async for chunk in client.generate_stream(
-        model=body.model,
-        prompt=body.prompt,
-        max_tokens=body.max_tokens,
-        temperature=body.temperature,
-        top_p=body.top_p,
-        stop_sequences=body.stop or None,
-    ):
-        token = chunk.get("response", "")
-        collected_text.append(token)
-        done = chunk.get("done", False)
-        finish = "stop" if done else None
-        event = {
-            "id": request_id,
-            "object": "text_completion",
-            "model": body.model,
-            "choices": [{"index": 0, "text": token, "finish_reason": finish}],
-        }
-        if done:
-            total_tokens = int(chunk.get("eval_count", 0))
-            prompt_tok = int(chunk.get("prompt_eval_count", 0))
-            event["usage"] = {
-                "prompt_tokens": prompt_tok,
-                "completion_tokens": total_tokens,
-                "total_tokens": prompt_tok + total_tokens,
+    try:
+        async for chunk in client.generate_stream(
+            model=body.model,
+            prompt=body.prompt,
+            max_tokens=body.max_tokens,
+            temperature=body.temperature,
+            top_p=body.top_p,
+            stop_sequences=body.stop or None,
+        ):
+            token = chunk.get("response", "")
+            collected_text.append(token)
+            done = chunk.get("done", False)
+            finish = "stop" if done else None
+            event = {
+                "id": request_id,
+                "object": "text_completion",
+                "model": body.model,
+                "choices": [{"index": 0, "text": token, "finish_reason": finish}],
             }
-            latency_ms = round((time.monotonic() - start) * 1000, 1)
-            event["latency_ms"] = latency_ms
-            # Instrument Prometheus
-            REQUEST_LATENCY.labels(model=body.model, endpoint="completions").observe(
-                latency_ms / 1000.0
-            )
-            TOKENS_GENERATED.labels(model=body.model).inc(total_tokens)
-            if prompt_tok:
-                PROMPT_TOKENS.labels(model=body.model).inc(prompt_tok)
-        yield f"data: {json.dumps(event)}\n\n"
+            if done:
+                total_tokens = int(chunk.get("eval_count", 0))
+                prompt_tok = int(chunk.get("prompt_eval_count", 0))
+                event["usage"] = {
+                    "prompt_tokens": prompt_tok,
+                    "completion_tokens": total_tokens,
+                    "total_tokens": prompt_tok + total_tokens,
+                }
+                latency_ms = round((time.monotonic() - start) * 1000, 1)
+                event["latency_ms"] = latency_ms
+                # Instrument Prometheus
+                REQUEST_LATENCY.labels(model=body.model, endpoint="completions").observe(
+                    latency_ms / 1000.0
+                )
+                TOKENS_GENERATED.labels(model=body.model).inc(total_tokens)
+                if prompt_tok:
+                    PROMPT_TOKENS.labels(model=body.model).inc(prompt_tok)
+            yield f"data: {json.dumps(event)}\n\n"
 
-    # Cache completed stream response
-    if cache is not None and collected_text:
-        full_text = "".join(collected_text)
-        await cache.put(body.model, cache_key, full_text)
+        # Cache completed stream response
+        if cache is not None and collected_text:
+            full_text = "".join(collected_text)
+            await cache.put(body.model, cache_key, full_text)
+
+        if circuit_breaker is not None:
+            circuit_breaker.record_success()
+    except Exception:
+        if circuit_breaker is not None:
+            circuit_breaker.record_failure()
+        raise
+    finally:
+        if throttler is not None and request_id_for_throttler is not None:
+            await throttler.release(request_id_for_throttler, memory_estimate_gb)
 
     yield "data: [DONE]\n\n"
 
@@ -600,6 +643,10 @@ async def _stream_chat_completion(
     messages: list[dict[str, str]],
     *,
     cache: Any = None,
+    circuit_breaker: CircuitBreaker | None = None,
+    throttler: AdaptiveThrottler | None = None,
+    request_id_for_throttler: str | None = None,
+    memory_estimate_gb: float = 0.5,
 ) -> AsyncIterator[str]:
     """Yield SSE events for a streaming chat completion.
 
@@ -615,6 +662,9 @@ async def _stream_chat_completion(
         cached = await cache.get(body.model, cache_key)
         if cached is not None:
             CACHE_HITS.inc()
+            # Cache hit — release throttler reservation immediately
+            if throttler is not None and request_id_for_throttler is not None:
+                await throttler.release(request_id_for_throttler, memory_estimate_gb)
             prompt_text = " ".join(m["content"] for m in messages)
             ptok = estimate_prompt_tokens(prompt_text)
             event = {
@@ -640,54 +690,65 @@ async def _stream_chat_completion(
 
     collected_text: list[str] = []
 
-    async for chunk in client.chat_stream(
-        model=body.model,
-        messages=messages,
-        max_tokens=body.max_tokens,
-        temperature=body.temperature,
-        top_p=body.top_p,
-        stop_sequences=body.stop or None,
-    ):
-        msg = chunk.get("message", {})
-        token = msg.get("content", "")
-        collected_text.append(token)
-        done = chunk.get("done", False)
-        finish = "stop" if done else None
-        event = {
-            "id": request_id,
-            "object": "chat.completion.chunk",
-            "model": body.model,
-            "choices": [
-                {
-                    "index": 0,
-                    "delta": {"role": "assistant", "content": token},
-                    "finish_reason": finish,
-                }
-            ],
-        }
-        if done:
-            total_tokens = int(chunk.get("eval_count", 0))
-            prompt_tok = int(chunk.get("prompt_eval_count", 0))
-            event["usage"] = {
-                "prompt_tokens": prompt_tok,
-                "completion_tokens": total_tokens,
-                "total_tokens": prompt_tok + total_tokens,
+    try:
+        async for chunk in client.chat_stream(
+            model=body.model,
+            messages=messages,
+            max_tokens=body.max_tokens,
+            temperature=body.temperature,
+            top_p=body.top_p,
+            stop_sequences=body.stop or None,
+        ):
+            msg = chunk.get("message", {})
+            token = msg.get("content", "")
+            collected_text.append(token)
+            done = chunk.get("done", False)
+            finish = "stop" if done else None
+            event = {
+                "id": request_id,
+                "object": "chat.completion.chunk",
+                "model": body.model,
+                "choices": [
+                    {
+                        "index": 0,
+                        "delta": {"role": "assistant", "content": token},
+                        "finish_reason": finish,
+                    }
+                ],
             }
-            latency_ms = round((time.monotonic() - start) * 1000, 1)
-            event["latency_ms"] = latency_ms
-            # Instrument Prometheus
-            REQUEST_LATENCY.labels(model=body.model, endpoint="chat").observe(
-                latency_ms / 1000.0
-            )
-            TOKENS_GENERATED.labels(model=body.model).inc(total_tokens)
-            if prompt_tok:
-                PROMPT_TOKENS.labels(model=body.model).inc(prompt_tok)
-        yield f"data: {json.dumps(event)}\n\n"
+            if done:
+                total_tokens = int(chunk.get("eval_count", 0))
+                prompt_tok = int(chunk.get("prompt_eval_count", 0))
+                event["usage"] = {
+                    "prompt_tokens": prompt_tok,
+                    "completion_tokens": total_tokens,
+                    "total_tokens": prompt_tok + total_tokens,
+                }
+                latency_ms = round((time.monotonic() - start) * 1000, 1)
+                event["latency_ms"] = latency_ms
+                # Instrument Prometheus
+                REQUEST_LATENCY.labels(model=body.model, endpoint="chat").observe(
+                    latency_ms / 1000.0
+                )
+                TOKENS_GENERATED.labels(model=body.model).inc(total_tokens)
+                if prompt_tok:
+                    PROMPT_TOKENS.labels(model=body.model).inc(prompt_tok)
+            yield f"data: {json.dumps(event)}\n\n"
 
-    # Cache completed stream response
-    if cache is not None and collected_text:
-        full_text = "".join(collected_text)
-        await cache.put(body.model, cache_key, full_text)
+        # Cache completed stream response
+        if cache is not None and collected_text:
+            full_text = "".join(collected_text)
+            await cache.put(body.model, cache_key, full_text)
+
+        if circuit_breaker is not None:
+            circuit_breaker.record_success()
+    except Exception:
+        if circuit_breaker is not None:
+            circuit_breaker.record_failure()
+        raise
+    finally:
+        if throttler is not None and request_id_for_throttler is not None:
+            await throttler.release(request_id_for_throttler, memory_estimate_gb)
 
     yield "data: [DONE]\n\n"
 
