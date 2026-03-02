@@ -64,7 +64,6 @@ Response` objects (one per request in the batch).
         self._max_tokens = max_tokens_per_batch
         self._queue_maxsize = queue_maxsize
         self._queues: dict[str, RequestQueue] = {}
-        self._lock = asyncio.Lock()
         logger.info(
             "scheduler_initialized",
             policy=policy,
@@ -79,12 +78,15 @@ Response` objects (one per request in the batch).
     async def submit(self, request: Request) -> None:
         """Enqueue *request* for scheduling.
 
-        A per-model queue is created automatically on first use.
+        A per-model queue is created automatically on first use.  Queue
+        creation uses :meth:`dict.setdefault` which is atomic under
+        CPython's GIL, avoiding any async lock suspension on the hot
+        submit path.
 
         Args:
             request: The inference request to schedule.
         """
-        queue = await self._get_or_create_queue(request.model)
+        queue = self._get_or_create_queue(request.model)
         await queue.enqueue(request)
         logger.debug(
             "request_submitted",
@@ -184,12 +186,18 @@ Response` objects (one per request in the batch).
     # Private helpers
     # ------------------------------------------------------------------
 
-    async def _get_or_create_queue(self, model: str) -> RequestQueue:
-        async with self._lock:
-            if model not in self._queues:
-                self._queues[model] = RequestQueue(maxsize=self._queue_maxsize)
-                logger.info("model_queue_created", model=model)
-            return self._queues[model]
+    def _get_or_create_queue(self, model: str) -> RequestQueue:
+        """Return the queue for *model*, creating it if needed.
+
+        Uses :meth:`dict.setdefault` which is atomic under CPython's GIL —
+        no async lock required.  Even if two coroutines call this
+        concurrently for the same model, at most one extra ``RequestQueue``
+        is constructed and immediately discarded; no data is corrupted.
+        """
+        if model not in self._queues:
+            self._queues.setdefault(model, RequestQueue(maxsize=self._queue_maxsize))
+            logger.info("model_queue_created", model=model)
+        return self._queues[model]
 
     async def _collect_batch_requests(self, queue: RequestQueue) -> list[Request]:
         """Drain up to ``max_requests_per_batch`` items from the queue."""
