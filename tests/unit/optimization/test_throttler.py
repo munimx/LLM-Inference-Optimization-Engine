@@ -1,12 +1,11 @@
 """Unit tests for AdaptiveThrottler."""
 
-import asyncio
 
 import pytest
 
 from llm_inference_engine.optimization.throttler import (
-    AdmissionDecision,
     AdaptiveThrottler,
+    AdmissionDecision,
 )
 
 

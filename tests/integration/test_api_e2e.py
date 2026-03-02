@@ -1,16 +1,14 @@
 """Integration tests for FastAPI endpoints with mocked Ollama."""
 
 from typing import Any
-from unittest.mock import AsyncMock, MagicMock, patch
 
+import httpx
 import pytest
 import respx
-import httpx
 from fastapi.testclient import TestClient
 
 from llm_inference_engine.api.server import create_app
 from llm_inference_engine.config import InferenceConfig
-
 
 OLLAMA_GENERATE_RESPONSE: dict[str, Any] = {
     "model": "llama3.1:8b",

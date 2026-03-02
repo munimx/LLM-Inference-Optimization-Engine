@@ -1,10 +1,6 @@
 """Unit tests for scheduling policies and the Scheduler."""
 
-import asyncio
 from typing import Any
-from unittest.mock import AsyncMock
-
-import pytest
 
 from llm_inference_engine.core.types import (
     GenerationConfig,

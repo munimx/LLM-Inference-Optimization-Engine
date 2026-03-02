@@ -1,11 +1,10 @@
 """Unit tests for ResultMapper."""
 
-import asyncio
 
 import pytest
 
 from llm_inference_engine.api.result_mapper import ResultMapper
-from llm_inference_engine.core.types import GenerationConfig, GenerationResult, Request, RequestStatus, Response
+from llm_inference_engine.core.types import GenerationResult, RequestStatus, Response
 
 
 def _make_response(request_id: str) -> Response:
