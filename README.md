@@ -130,7 +130,7 @@ All settings are in `configs/default.yaml`. The key knobs:
 ## Development
 
 ```bash
-# Tests (no Ollama required, ~2 s, 600+ tests)
+# Tests (no Ollama required, ~2 s, 580+ tests)
 pytest tests/unit/ --no-cov
 
 # Coverage report
@@ -148,14 +148,13 @@ python scripts/run_benchmarks.py --config configs/benchmarks.yaml
 
 ## Caveats
 
-- **Streaming bypasses batching and memory admission** — `stream: true` requests go directly to Ollama without passing through the scheduler or throttler. Cache lookup/storage and Prometheus metrics are still applied.
+- **Streaming bypasses batching** — `stream: true` requests go directly to Ollama without passing through the scheduler. Throttler admission control, circuit breaker, and cache lookup/storage are still applied.
 - **Batching is concurrent fanout, not true batching** — Ollama's API processes one request at a time. `dispatch_batch()` issues requests concurrently but Ollama serialises them internally.
 - **Memory estimates are heuristic** — the throttler uses a fixed per-request estimate (0.5 GB). There is no feedback from Ollama's actual memory usage.
 
 ## Roadmap
 
 - [ ] Swap aggregator's `OllamaClient` for `InferenceBackend` interface to enable vLLM/TGI backends at runtime
-- [x] Route streaming requests through scheduler/throttler for full admission control
 - [ ] Event-driven batch formation (background drain loop)
 - [ ] Request preemption — high-priority requests can interrupt running batches
 - [ ] Re-benchmark with current architecture; add TTFT (time to first token) metrics
