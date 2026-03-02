@@ -6,6 +6,7 @@ that are then verified by the larger target model, reducing end-to-end
 latency when the acceptance rate is high.
 """
 
+import re
 from dataclasses import dataclass, field
 from typing import Any
 
@@ -14,6 +15,9 @@ import structlog
 from llm_inference_engine.integration.ollama_client import OllamaClient
 
 logger = structlog.get_logger(__name__)
+
+# Compiled once at module load; reused for every _split_tokens() call.
+_TOKEN_SPLIT_RE: re.Pattern[str] = re.compile(r"(\s+)")
 
 
 @dataclass
@@ -153,9 +157,7 @@ class DraftModelManager:
         if not text:
             return []
         # Preserve leading space per token for natural reconstruction.
-        import re
-
-        return [t for t in re.split(r"(\s+)", text) if t]
+        return [t for t in _TOKEN_SPLIT_RE.split(text) if t]
 
 
 __all__ = ["DraftModelManager", "DraftCandidate"]

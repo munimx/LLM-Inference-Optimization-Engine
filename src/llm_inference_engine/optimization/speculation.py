@@ -232,7 +232,10 @@ draft_manager.DraftModelManager` wrapping the small draft model.
             if i >= len(target_tokens):
                 break
             target_tok = target_tokens[i]
-            if draft_tok.strip().lower() == target_tok.strip().lower():
+            # Compare after stripping surrounding whitespace only.
+            # Do NOT normalise case: "The" and "the" are distinct tokens
+            # and accepting them interchangeably degrades output quality.
+            if draft_tok.strip() == target_tok.strip():
                 accepted.append(draft_tok)
             else:
                 correction = target_tok
