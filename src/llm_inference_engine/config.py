@@ -1,5 +1,6 @@
 """Configuration management for the inference engine."""
 
+import os
 from dataclasses import dataclass, field
 from pathlib import Path
 from typing import Any
@@ -24,6 +25,16 @@ class OllamaConfig:
     health_check_interval_seconds: int = 60
 
     def __post_init__(self) -> None:
+        # Allow env vars to override YAML values (useful for Docker)
+        env_host = os.environ.get("OLLAMA_HOST")
+        if env_host:
+            self.host = env_host
+        env_port = os.environ.get("OLLAMA_PORT")
+        if env_port:
+            try:
+                self.port = int(env_port)
+            except ValueError as exc:
+                raise ConfigurationError(f"OLLAMA_PORT must be an integer, got {env_port!r}") from exc
         if self.port <= 0 or self.port > 65535:
             raise ConfigurationError("ollama.port must be between 1 and 65535")
         if self.timeout_seconds <= 0:
