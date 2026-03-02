@@ -5,9 +5,12 @@ from pathlib import Path
 import pytest
 
 from llm_inference_engine.config import (
+    CacheConfig,
     InferenceConfig,
+    MemoryConfig,
     ModelConfig,
     OllamaConfig,
+    SchedulingConfig,
     ServerConfig,
     load_config,
 )
@@ -145,3 +148,86 @@ class TestLoadConfig:
         config = load_config()
         assert isinstance(config, InferenceConfig)
         assert config.ollama.host == "localhost"
+
+
+class TestCacheConfig:
+    """Tests for CacheConfig."""
+
+    def test_default_values(self) -> None:
+        config = CacheConfig()
+        assert config.enabled is True
+        assert config.max_size > 0
+        assert config.ttl_seconds > 0
+
+    def test_custom_values(self) -> None:
+        config = CacheConfig(enabled=False, max_size=512, ttl_seconds=600.0)
+        assert config.enabled is False
+        assert config.max_size == 512
+        assert config.ttl_seconds == 600.0
+
+
+class TestSchedulingConfig:
+    """Tests for SchedulingConfig."""
+
+    def test_default_values(self) -> None:
+        config = SchedulingConfig()
+        assert config.policy is not None
+        assert config.max_requests_per_batch > 0
+
+    def test_custom_policy(self) -> None:
+        config = SchedulingConfig(policy="priority", max_requests_per_batch=4)
+        assert config.policy == "priority"
+        assert config.max_requests_per_batch == 4
+
+
+class TestMemoryConfig:
+    """Tests for MemoryConfig."""
+
+    def test_default_values(self) -> None:
+        config = MemoryConfig()
+        assert config.limit_gb > 0
+        assert config.safety_margin >= 1.0
+
+    def test_custom_values(self) -> None:
+        config = MemoryConfig(limit_gb=32.0, safety_margin=1.2)
+        assert config.limit_gb == 32.0
+        assert config.safety_margin == 1.2
+
+
+class TestInferenceConfigWithNewFields:
+    """Tests for new config fields on InferenceConfig."""
+
+    def test_cache_field_exists(self) -> None:
+        config = InferenceConfig()
+        assert isinstance(config.cache, CacheConfig)
+
+    def test_scheduling_field_exists(self) -> None:
+        config = InferenceConfig()
+        assert isinstance(config.scheduling, SchedulingConfig)
+
+    def test_memory_field_exists(self) -> None:
+        config = InferenceConfig()
+        assert isinstance(config.memory, MemoryConfig)
+
+    def test_to_dict_includes_cache(self) -> None:
+        config = InferenceConfig()
+        d = config.to_dict()
+        assert "cache" in d
+
+    def test_to_dict_includes_scheduling(self) -> None:
+        config = InferenceConfig()
+        d = config.to_dict()
+        assert "scheduling" in d
+
+    def test_to_dict_includes_memory(self) -> None:
+        config = InferenceConfig()
+        d = config.to_dict()
+        assert "memory" in d
+
+    def test_ollama_retry_backoff_default(self) -> None:
+        config = OllamaConfig()
+        assert config.retry_backoff_seconds == 1.0
+
+    def test_ollama_retry_backoff_custom(self) -> None:
+        config = OllamaConfig(retry_backoff_seconds=2.5)
+        assert config.retry_backoff_seconds == 2.5
