@@ -105,3 +105,43 @@ async def main():
 asyncio.run(main())
 "
 ```
+
+---
+
+## Post-Phase-7 Performance Improvements (perf/1–8)
+
+The following improvements were landed after Phase 7 to address bottlenecks found
+under production-level load testing:
+
+| Branch | Change | Observed Impact |
+|---|---|---|
+| `perf/1-batch-token-counter` | O(n²)→O(1) token tracking in `Batch` | Eliminates quadratic scheduling overhead at batch_size > 16 |
+| `perf/2-cache-async-lock` | `asyncio.Lock` on `SemanticCache` | Prevents spurious cache misses and crashes under concurrent requests |
+| `perf/3-scheduler-lock-free-queues` | `dict.setdefault()` for queue creation | Removes `async with self._lock` serialisation on every `submit()` |
+| `perf/4-speculation-fixes` | Precompiled regex + case-exact token match | Reduces overhead per speculation round; fixes inflated acceptance rates |
+| `perf/5-memoize-estimators` | `lru_cache` on weight/context estimators | Near-zero latency for repeated same-model estimates under load |
+| `perf/6-queue-bounded-cancellation` | Guard `_cancelled` with `_queued_ids` | Prevents unbounded set growth from stale cancellation IDs |
+| `perf/7-config-driven-server` | Wire `InferenceConfig` into server lifespan | Enables zero-code tuning via `configs/default.yaml` |
+| `perf/8-backoff-jitter` | Jitter `+ uniform(0,1)` in retry sleep | Spreads retry storms across `[base·2^n, base·2^n + 1]` second window |
+
+### Configuration Tuning Reference
+
+After perf/7, all critical limits are in `configs/default.yaml`:
+
+```yaml
+cache:
+  max_size: 1000          # LRU capacity (entries)
+  ttl_seconds: 300.0      # TTL before eviction
+
+scheduling:
+  policy: fcfs            # fcfs | sjf | priority | token_budget
+  max_requests_per_batch: 8
+  token_budget: 512
+
+memory:
+  limit_gb: 14.0          # Hard admission reject threshold
+  soft_limit_ratio: 0.85  # Soft limit for QUEUE decision
+
+ollama:
+  retry_backoff_seconds: 1.0   # Base for exponential + jitter backoff
+```

@@ -105,6 +105,35 @@ cache:
 
 Override any value via environment variable using `LLM_ENGINE_<KEY>` notation.
 
+## Performance Improvements
+
+Eight targeted performance improvements were applied after Phase 7 (each on its own branch):
+
+| # | Improvement | Impact |
+|---|---|---|
+| perf/1 | O(n²) → O(1) batch token tracking | Scheduling throughput at batch sizes > 16 |
+| perf/2 | Async lock on SemanticCache | Prevents cache corruption under concurrent requests |
+| perf/3 | Lock-free per-model queue creation | Submit throughput under high concurrency |
+| perf/4 | Precompile regex + fix token matching | Speculation latency + acceptance accuracy |
+| perf/5 | `lru_cache` on weight/context estimators | Per-request lookup latency under load |
+| perf/6 | Bounded cancellation set in RequestQueue | Memory bounded to queue size in long-running servers |
+| perf/7 | Config-driven server startup | Correct resource sizing; no code changes to tune |
+| perf/8 | Jitter in OllamaClient retry backoff | Eliminates thundering-herd retry storms |
+
+See [docs/PERFORMANCE_REPORT.md](docs/PERFORMANCE_REPORT.md) for benchmark numbers.
+
+## Test Coverage
+
+The project ships **537 unit tests** (all runnable without a live Ollama instance):
+
+```bash
+pytest tests/unit/ --no-cov   # ~2 s, 537 tests
+```
+
+Coverage areas: API layer, scheduling policies, memory estimation, speculative decoding,
+adaptive throttler, quantization types/mapper/metrics/collector, config validation,
+exception hierarchy, benchmark utilities.
+
 ## Performance Tuning
 
 | Goal | Recommendation |
@@ -114,8 +143,7 @@ Override any value via environment variable using `LLM_ENGINE_<KEY>` notation.
 | Reduce memory pressure | Lower `memory.limit_gb`, enable throttler |
 | Improve cache hit rate | Increase `cache.ttl_seconds`, reuse prompts |
 | Faster generation | Enable speculative decoding with a small draft model |
-
-See [docs/PERFORMANCE_REPORT.md](docs/PERFORMANCE_REPORT.md) for benchmark numbers.
+| Tune retry behaviour | Adjust `ollama.retry_backoff_seconds` in `default.yaml` |
 
 ## Project Status
 
@@ -128,6 +156,8 @@ See [docs/PERFORMANCE_REPORT.md](docs/PERFORMANCE_REPORT.md) for benchmark numbe
 | Phase 5 — API Layer | `phase-5-api-layer` | ✅ Complete |
 | Phase 6 — Speculative Decoding | `phase-6-speculative-decoding` | ✅ Complete |
 | Phase 7 — Production Hardening | `phase-7-production-hardening` | ✅ Complete |
+| perf/1–8 — Performance Improvements | `perf/1` → `perf/8` | ✅ Complete |
+| 300+ new tests | `tests/*-layer` branches | ✅ Complete (537 total) |
 
 ## Documentation
 

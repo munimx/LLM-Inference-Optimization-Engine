@@ -135,6 +135,25 @@ ollama:
   retry_backoff_seconds: 1.0
 ```
 
+### Retry Backoff with Jitter
+
+As of `perf/8`, the client uses **full-jitter exponential backoff**:
+
+```
+sleep = retry_backoff_seconds × (2 ^ attempt) + uniform(0, 1)
+```
+
+This spreads retry storms when multiple requests fail simultaneously
+(thundering-herd prevention). Tuning guide:
+
+| Scenario | Recommended `retry_backoff_seconds` |
+|---|---|
+| Local Ollama, stable | `0.5` (fast recovery) |
+| Local Ollama, shared M2 memory | `1.0` (default) |
+| Remote Ollama over LAN | `2.0` (tolerate network jitter) |
+
+Set `retry_count: 0` to disable retries entirely.
+
 ### Environment Variables (Future)
 
 Override configuration via environment variables:

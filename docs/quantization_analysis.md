@@ -39,3 +39,22 @@ Outputs are written to `tests/benchmarks/benchmark_results/`:
    - `balanced` weights speed and quality similarly.
    - `quality` favors minimal quality degradation.
    - `memory` prioritizes low memory footprint.
+
+---
+
+## Test Coverage
+
+The quantization subsystem is covered by **83 unit tests** across 4 test files:
+
+| File | Tests | Coverage |
+|---|---|---|
+| `tests/unit/quantization/test_types.py` | 30 | `QuantizationLevel`, `PreferencePriority`, `QualityTier`, `QuantizedModelInfo`, `BenchmarkConfig`, `BenchmarkResult`, `QualityScore`, `QualityTestCase` |
+| `tests/unit/quantization/test_mapper.py` | 22 | `QuantizationMapper.select_model`, `rank_models`, `get_recommendations`, `_filter_by_constraints`, all 4 priority modes |
+| `tests/unit/quantization/test_metrics.py` | 17 | `QualityMetricsCalculator` (BLEU, ROUGE, semantic similarity, perplexity), `QualityBenchmark` |
+| `tests/unit/quantization/test_collector.py` | 14 | `QuantizationInfoCollector.collect_*`, `_parse_quantization_level`, `_estimate_quality_tier` |
+
+Run with:
+
+```bash
+pytest tests/unit/quantization/ --no-cov -v
+```

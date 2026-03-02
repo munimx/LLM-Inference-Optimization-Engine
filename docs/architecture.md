@@ -303,3 +303,57 @@ for each round:
 ```
 
 **Expected outcome:** Speedup > 1.2× on well-matched draft/target pairs.
+
+---
+
+## Performance Improvements (perf/1–8)
+
+Eight targeted improvements were applied to production-critical code paths after Phase 7.
+
+### perf/1 — O(1) Batch Token Tracking
+**File:** `scheduling/batch.py`
+- Added `_total_tokens: int` field incremented in `add()`
+- Removed O(n) sum on every `can_add()` call
+- Impact: scheduling throughput at batch sizes > 16
+
+### perf/2 — Async-Safe SemanticCache
+**File:** `api/cache.py`
+- Added `asyncio.Lock` guard around all multi-step operations
+- Converted `get`/`put`/`invalidate`/`clear` to async methods
+- Impact: prevents cache corruption under concurrent requests
+
+### perf/3 — Lock-Free Queue Creation
+**File:** `scheduling/scheduler.py`
+- Replaced `async with self._lock` in `_get_or_create_queue()` with `dict.setdefault()`
+- Atomic under CPython GIL; eliminates coroutine suspension on every submit
+- Impact: submit throughput under high concurrency
+
+### perf/4 — Regex Precompile + Token Matching Fix
+**Files:** `optimization/draft_manager.py`, `optimization/speculation.py`
+- Moved `re.compile(r"(\s+)")` to module-level constant `_TOKEN_SPLIT_RE`
+- Removed `.lower()` from `_verify()` token comparison to prevent false accepts
+- Impact: speculation latency + acceptance accuracy
+
+### perf/5 — Memoized Estimators
+**Files:** `optimization/memory.py`, `optimization/context.py`
+- Applied `@functools.lru_cache` to weight estimation and context window lookups
+- Pre-sorted registry items by key length for O(1) prefix matching
+- Impact: per-request lookup latency, especially under high concurrency
+
+### perf/6 — Bounded Cancellation Set
+**File:** `scheduling/queue.py`
+- Added `_queued_ids: set[str]`; `cancel()` only inserts to `_cancelled` if ID is queued
+- Bounds `_cancelled` set memory to at most queue size (previously unbounded)
+- Impact: memory in long-running servers with stale cancellation IDs
+
+### perf/7 — Config-Driven Server Startup
+**Files:** `config.py`, `api/server.py`, `configs/default.yaml`
+- Added `SchedulingConfig`, `CacheConfig`, `MemoryConfig` to `InferenceConfig`
+- Server lifespan now reads `config.cache.*`, `config.scheduling.*`, `config.memory.*`
+- Impact: correct resource sizing at startup; tunable without code changes
+
+### perf/8 — Jitter in Retry Backoff
+**File:** `integration/ollama_client.py`
+- Changed `sleep(2 ** attempt)` to `sleep(base * (2 ** attempt) + uniform(0, 1))`
+- Base delay sourced from `config.ollama.retry_backoff_seconds`
+- Impact: eliminates thundering-herd retry storms; improves tail latency
