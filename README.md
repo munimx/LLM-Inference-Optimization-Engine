@@ -62,6 +62,13 @@ pip install -e ".[dev]"
 python scripts/start_server.py
 ```
 
+### Docker
+
+```bash
+docker compose up        # starts Ollama + engine
+# Engine at http://localhost:8000, Ollama at http://localhost:11434
+```
+
 ## Usage
 
 ```bash
@@ -85,8 +92,12 @@ All settings are in `configs/default.yaml`. The key knobs:
 |---|---|---|
 | `scheduling.policy` | `fcfs` | `fcfs` · `sjf` · `priority` · `token_budget` |
 | `scheduling.max_requests_per_batch` | `8` | Requests dispatched per drain cycle |
+| `scheduling.max_queue_depth` | `0` | Max pending requests (0=unlimited); rejects 429 when full |
+| `scheduling.circuit_breaker_threshold` | `5` | Consecutive failures before circuit opens |
+| `scheduling.circuit_breaker_cooldown_seconds` | `30` | Seconds before circuit half-opens |
 | `cache.max_size` | `256` | LRU capacity (entries) |
 | `cache.ttl_seconds` | `300` | Seconds before a cache entry is treated as a miss |
+| `cache.mode` | `exact` | `exact` or `semantic` (semantic uses Ollama embeddings) |
 | `memory.limit_gb` | `14.0` | Hard admission reject threshold (M2 Air default) |
 | `auth.enabled` | `false` | Enable API-key authentication |
 | `auth.api_keys` | `[]` | List of valid Bearer tokens |
@@ -95,20 +106,24 @@ All settings are in `configs/default.yaml`. The key knobs:
 
 ## Key Features
 
-- **SSE Streaming** — `"stream": true` proxies Ollama's token-by-token output via Server-Sent Events
+- **SSE Streaming** — `"stream": true` proxies Ollama's token-by-token output via Server-Sent Events, with cache integration and Prometheus instrumentation
 - **Chat completions** — `/chat/completions` uses Ollama's native `/api/chat` with structured messages
-- **Exact-match cache** — fast LRU cache keyed on `(model, prompt)`
-- **Semantic cache** — embedding-based similarity matching via Ollama's `/api/embed` (opt-in)
-- **Request coalescing** — identical in-flight requests are deduplicated
+- **Exact-match cache** — fast LRU cache keyed on `(model, prompt)`; streaming responses also cached
+- **Semantic cache** — embedding-based similarity matching via Ollama's `/api/embed` (opt-in via `cache.mode: "semantic"`)
+- **Request coalescing** — identical in-flight chat requests are deduplicated
+- **Circuit breaker** — opens after N consecutive Ollama failures, auto-recovers after cooldown
+- **Queue limits** — configurable `max_queue_depth` with HTTP 429 backpressure
+- **Per-request timeout** — optional `timeout_seconds` on each request (returns 504 on expiry)
 - **API-key auth** — optional Bearer-token authentication middleware
-- **Prometheus metrics** — scrapable at `GET /metrics/prometheus`
+- **Prometheus metrics** — scrapable at `GET /metrics/prometheus`, includes streaming latency and token counts
 - **Multi-backend interface** — abstract `InferenceBackend` ABC; Ollama adapter included, extensible to vLLM/TGI/llama.cpp
+- **Docker deployment** — `docker compose up` with Ollama + engine in one command
 - **Prompt token counting** — uses Ollama's `prompt_eval_count` with char/4 fallback
 
 ## Development
 
 ```bash
-# Tests (no Ollama required, ~2 s, 570 tests)
+# Tests (no Ollama required, ~2 s, 600+ tests)
 pytest tests/unit/ --no-cov
 
 # Coverage report
@@ -123,6 +138,14 @@ mypy src/llm_inference_engine --strict
 # Quantization benchmarks (requires Ollama)
 python scripts/run_benchmarks.py --config configs/benchmarks.yaml
 ```
+
+## Roadmap
+
+- [ ] Swap aggregator's `OllamaClient` for `InferenceBackend` interface to enable vLLM/TGI backends at runtime
+- [ ] Streaming through scheduler/throttler (currently streaming bypasses batching and memory admission)
+- [ ] Request preemption — high-priority requests can interrupt running batches
+- [ ] Re-benchmark with current architecture; add TTFT (time to first token) metrics
+- [ ] Cluster mode — multiple engine instances with shared cache (Redis)
 
 ## Contributing
 

@@ -1,5 +1,7 @@
 # Performance Report — LLM Inference Optimization Engine
 
+> **⚠️ Disclaimer:** These benchmarks were collected with an earlier version of the engine (pre-streaming, pre-coalescing, pre-circuit-breaker). The architecture has changed significantly since these numbers were measured. They remain useful as directional indicators but should not be cited as current performance claims. Re-benchmarking with the current codebase is on the [roadmap](../README.md#roadmap).
+
 **Hardware**: Apple M2 Air, 16 GB unified memory  
 **Ollama**: local (llama3.1:8b Q4_K_M, mistral:7b Q4_K_M, phi3:latest Q4_K_M, deepseek-r1:7b Q4_K_M)  
 **Engine config**: `fcfs` policy, `max_requests_per_batch=8`, LRU cache 256 entries, TTL 300s  
