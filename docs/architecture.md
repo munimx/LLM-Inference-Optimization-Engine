@@ -85,7 +85,7 @@ The LLM Inference Optimization Engine is built as an orchestration layer on top 
 
 **Key Design Decisions**:
 - YAML-based configuration files
-- Environment variable overrides (future)
+- Environment variable overrides (`OLLAMA_HOST`, `OLLAMA_PORT`)
 - Type-safe configuration objects
 - Default values for all settings
 
@@ -175,61 +175,6 @@ The LLM Inference Optimization Engine is built as an orchestration layer on top 
 - Structured logging
 - Context preservation
 - JSON output support
-
-## Phase 1 Status
-
-**Completed**:
-- ✅ Ollama client implementation
-- ✅ Model manager
-- ✅ Core type definitions
-- ✅ Configuration system
-- ✅ Setup verification script
-- ✅ Unit tests
-
-**Next Steps** (Phase 2):
-- Quantization understanding
-- Benchmarking framework
-- Quality/speed tradeoff analysis
-
-## Integration Points
-
-### With Ollama
-- HTTP API at `localhost:11434`
-- Endpoints: `/api/generate`, `/api/tags`
-- JSON request/response format
-- Streaming support (future)
-
-### With Future Phases
-- Phase 3: Scheduler uses model manager for batch sizing
-- Phase 4: Memory estimates from model info
-- Phase 5: REST API orchestrates all components
-- Phase 6: Speculation uses model compatibility checks
-
-## Deployment Considerations
-
-### Requirements
-- Ollama installed and running
-- Python 3.11+ environment
-- 16GB RAM (M2 Air target)
-- Models pulled via Ollama
-
-### Configuration
-- YAML files in `configs/`
-- Override via environment variables
-- Sensible defaults provided
-
-### Monitoring
-- Health check endpoint
-- Structured logs
-- Metrics (Phase 5)
-
-## Future Enhancements
-
-1. **Connection Pooling**: Reuse connections to Ollama
-2. **Circuit Breaker**: Fail fast if Ollama is down
-3. **Model Caching**: Cache model metadata longer
-4. **Configuration Validation**: JSON Schema validation
-5. **Secret Management**: Secure credential handling
 
 ---
 
