@@ -408,7 +408,9 @@ Use `cache_hits / total_requests` to monitor cache hit rate. A rate below 30% in
 |-------------|---------|--------|
 | `200` | Success | Read `choices[0].text` or `choices[0].message.content` |
 | `422` | Validation error | Fix request body (empty prompt, bad model name format, etc.) |
+| `429` | Queue full / admission rejected | Too many concurrent requests; retry with backoff |
 | `503` | Ollama unreachable or memory limit exceeded | Retry with backoff; check `GET /health` |
+| `504` | Request timed out | Ollama took too long; increase timeout or reduce `max_tokens` |
 
 ```python
 import requests
@@ -489,6 +491,53 @@ Point `ollama.host` in `configs/default.yaml` at the Docker host IP (or use `hos
 | mistral:7b | 60s | Standard generation |
 | llama3.1:8b | 90s | Longer context windows |
 | deepseek-r1:7b | 300s | Reasoning model — emits chain-of-thought |
+
+---
+
+## Streaming
+
+Both `/completions` and `/chat/completions` support SSE streaming via the `stream` parameter. Streamed responses are cached for subsequent requests.
+
+### curl
+
+```bash
+curl -N http://localhost:8000/completions \
+  -H "Content-Type: application/json" \
+  -d '{"model": "llama3.1:8b", "prompt": "Explain TCP/IP.", "stream": true}'
+```
+
+Each SSE line contains a JSON chunk:
+```
+data: {"choices": [{"text": "TCP", "finish_reason": null}]}
+data: {"choices": [{"text": "/IP", "finish_reason": null}]}
+data: {"choices": [{"text": " is", "finish_reason": null}]}
+...
+data: {"choices": [{"text": "", "finish_reason": "stop"}]}
+data: [DONE]
+```
+
+### Python
+
+```python
+import httpx
+
+async def stream_completion(prompt: str, model: str = "llama3.1:8b") -> str:
+    full_text = []
+    async with httpx.AsyncClient(timeout=120) as client:
+        async with client.stream(
+            "POST",
+            "http://localhost:8000/completions",
+            json={"model": model, "prompt": prompt, "stream": True},
+        ) as resp:
+            async for line in resp.aiter_lines():
+                if line.startswith("data: ") and line != "data: [DONE]":
+                    import json
+                    chunk = json.loads(line[6:])
+                    text = chunk["choices"][0]["text"]
+                    print(text, end="", flush=True)
+                    full_text.append(text)
+    return "".join(full_text)
+```
 
 ---
 
