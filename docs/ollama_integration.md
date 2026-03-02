@@ -156,15 +156,16 @@ This spreads retry storms when multiple requests fail simultaneously
 
 Set `retry_count: 0` to disable retries entirely.
 
-### Environment Variables (Future)
+### Environment Variables
 
 Override configuration via environment variables:
 
 ```bash
 export OLLAMA_HOST=192.168.1.100
 export OLLAMA_PORT=11434
-export OLLAMA_TIMEOUT=600
 ```
+
+These are applied at config load time and override `configs/default.yaml` values.
 
 ## Using the Integration
 
@@ -333,12 +334,9 @@ Choose appropriate quantization level:
 
 ## Advanced Topics
 
-### Streaming Responses (Future)
+### Streaming Responses
 
-```python
-async for chunk in client.stream_generate(model="mistral", prompt="..."):
-    print(chunk["response"], end="", flush=True)
-```
+The engine supports SSE streaming via the `stream` parameter on both `/completions` and `/chat/completions` endpoints. See [integration_guide.md](integration_guide.md) for client-side streaming examples.
 
 ### Custom Model Parameters
 
