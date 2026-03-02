@@ -23,14 +23,30 @@ class OllamaConfig:
     retry_backoff_seconds: float = 1.0
     health_check_interval_seconds: int = 60
 
+    def __post_init__(self) -> None:
+        if self.port <= 0 or self.port > 65535:
+            raise ConfigurationError("ollama.port must be between 1 and 65535")
+        if self.timeout_seconds <= 0:
+            raise ConfigurationError("ollama.timeout_seconds must be positive")
+        if self.retry_count < 0:
+            raise ConfigurationError("ollama.retry_count must be non-negative")
+        if self.retry_backoff_seconds < 0:
+            raise ConfigurationError("ollama.retry_backoff_seconds must be non-negative")
+
 
 @dataclass
 class CacheConfig:
-    """Configuration for the semantic response cache."""
+    """Configuration for the response cache."""
 
     enabled: bool = True
     max_size: int = 256
     ttl_seconds: float = 300.0
+
+    def __post_init__(self) -> None:
+        if self.max_size <= 0:
+            raise ConfigurationError("cache.max_size must be positive")
+        if self.ttl_seconds <= 0:
+            raise ConfigurationError("cache.ttl_seconds must be positive")
 
 
 @dataclass
@@ -41,6 +57,17 @@ class SchedulingConfig:
     max_requests_per_batch: int = 8
     max_tokens_per_batch: int = 0
 
+    def __post_init__(self) -> None:
+        valid_policies = {"fcfs", "sjf", "priority", "token_budget"}
+        if self.policy not in valid_policies:
+            raise ConfigurationError(
+                f"scheduling.policy must be one of {valid_policies}, got {self.policy!r}"
+            )
+        if self.max_requests_per_batch <= 0:
+            raise ConfigurationError("scheduling.max_requests_per_batch must be positive")
+        if self.max_tokens_per_batch < 0:
+            raise ConfigurationError("scheduling.max_tokens_per_batch must be non-negative")
+
 
 @dataclass
 class MemoryConfig:
@@ -48,6 +75,12 @@ class MemoryConfig:
 
     limit_gb: float = 14.0
     safety_margin: float = 1.1
+
+    def __post_init__(self) -> None:
+        if self.limit_gb <= 0:
+            raise ConfigurationError("memory.limit_gb must be positive")
+        if self.safety_margin < 1.0:
+            raise ConfigurationError("memory.safety_margin must be >= 1.0")
 
 
 @dataclass
@@ -60,6 +93,24 @@ class ModelConfig:
     quantization: str = "4-bit"
     default_temperature: float = 0.7
     default_top_p: float = 0.9
+
+
+@dataclass
+class AuthConfig:
+    """Configuration for API key authentication.
+
+    When ``api_keys`` is empty (default), authentication is disabled and
+    all requests are allowed through.
+    """
+
+    enabled: bool = False
+    api_keys: list[str] = field(default_factory=list)
+
+    def __post_init__(self) -> None:
+        if self.enabled and not self.api_keys:
+            raise ConfigurationError(
+                "auth.enabled is true but no api_keys are configured"
+            )
 
 
 @dataclass
@@ -79,6 +130,7 @@ class InferenceConfig:
 
     ollama: OllamaConfig = field(default_factory=OllamaConfig)
     server: ServerConfig = field(default_factory=ServerConfig)
+    auth: AuthConfig = field(default_factory=AuthConfig)
     cache: CacheConfig = field(default_factory=CacheConfig)
     scheduling: SchedulingConfig = field(default_factory=SchedulingConfig)
     memory: MemoryConfig = field(default_factory=MemoryConfig)
@@ -126,6 +178,14 @@ class InferenceConfig:
         except TypeError as e:
             logger.error("config_type_error", error=str(e))
             raise ConfigurationError(f"Invalid server configuration: {e}") from e
+
+        # Parse auth config
+        auth_data = data.get("auth", {})
+        try:
+            auth_config = AuthConfig(**auth_data)
+        except TypeError as e:
+            logger.error("config_type_error", error=str(e))
+            raise ConfigurationError(f"Invalid auth configuration: {e}") from e
 
         # Parse cache config
         cache_data = data.get("cache", {})
@@ -179,6 +239,7 @@ class InferenceConfig:
         return cls(
             ollama=ollama_config,
             server=server_config,
+            auth=auth_config,
             cache=cache_config,
             scheduling=scheduling_config,
             memory=memory_config,
