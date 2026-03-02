@@ -1,181 +1,84 @@
 # LLM Inference Optimization Engine
 
-A production-grade LLM inference optimization layer built on top of Ollama for Apple M2 Air.
+Request scheduling, semantic caching, and speculative decoding middleware for [Ollama](https://ollama.ai/), exposing an OpenAI-compatible HTTP API.
 
-[![CI](https://github.com/<org>/llm-inference-engine/actions/workflows/ci.yml/badge.svg)](../../actions/workflows/ci.yml)
+[![CI](https://github.com/munimx/LLM-Inference-Optimization-Engine/actions/workflows/ci.yml/badge.svg)](https://github.com/munimx/LLM-Inference-Optimization-Engine/actions/workflows/ci.yml)
+[![Python 3.11+](https://img.shields.io/badge/python-3.11%2B-blue)](https://www.python.org/downloads/)
+[![License: Apache 2.0](https://img.shields.io/badge/license-Apache%202.0-green)](LICENSE)
 
-## Overview
+---
 
-An intelligent orchestration and optimization layer on top of Ollama:
-
-- **Smart Batching & Scheduling** — FCFS, SJF, Priority, and TokenBudget policies
-- **Memory & Capacity Planning** — KV-cache estimation, adaptive admission control
-- **OpenAI-compatible REST API** — drop-in replacement for clients using `/completions`
-- **Semantic Caching** — LRU + TTL cache eliminates redundant Ollama calls
-- **Speculative Decoding** — draft-verify loop for up to 1.35× speedup
+Sits between your application and Ollama. Incoming completions requests are checked against a semantic cache, queued by configurable scheduling policy, dispatched to Ollama in concurrent batches, and returned via per-request futures. A draft-model speculation loop and adaptive memory throttler are available as opt-in layers.
 
 ## Architecture
 
 ```
-POST /completions  (FastAPI, port 8000)
-       ↓
-SemanticCache  ──── hit ────▶  return cached response
+POST /completions
+       │
+       ▼
+SemanticCache ──── hit ───────────────────────────▶ response
        │ miss
-       ▓
+       ▼
 RequestAggregator
-       ↓
+       │
+       ▼
 Scheduler  (per-model RequestQueue + SchedulingPolicy)
-       ↓
-dispatch_batch()  ──── concurrent httpx calls ────▶  Ollama
-       ↓
+       │
+       ▼
+dispatch_batch()  ── concurrent httpx ──▶  Ollama
+       │
+       ▼
 ResultMapper  (asyncio.Future per request)
-       ↓
+       │
+       ▼
 CompletionResponse
 ```
 
-See [docs/architecture.md](docs/architecture.md) for detailed component diagrams.
+See [docs/architecture.md](docs/architecture.md) for component details.
 
-## Features
-
-| Feature | Status |
-|---|---|
-| Ollama async client with retry / backoff | ✅ Complete |
-| Quantization analysis & benchmarking | ✅ Complete |
-| Batching & scheduling (FCFS, SJF, Priority, TokenBudget) | ✅ Complete |
-| Memory estimator + adaptive throttler | ✅ Complete |
-| OpenAI-compatible REST API (FastAPI) | ✅ Complete |
-| Semantic cache (LRU + TTL) | ✅ Complete |
-| Speculative decoding engine | ✅ Complete |
-| GitHub Actions CI (lint, type-check, tests) | ✅ Complete |
-
-## Prerequisites
-
-- Python 3.11+
-- [Ollama](https://ollama.ai/) installed and running
-- Apple M2 Air recommended (8 GB minimum unified memory)
-
-## Quick Start
+## Setup
 
 ```bash
-# 1. Pull a model
+# Requires Ollama running locally (https://ollama.ai)
 ollama pull llama3:8b
 
-# 2. Install (editable + dev dependencies)
 pip install -e ".[dev]"
 
-# 3. Start the server
 python scripts/start_server.py
-
-# 4. Send a request
-curl -s http://localhost:8000/completions \
-  -H "Content-Type: application/json" \
-  -d '{"model": "llama3:8b", "prompt": "Hello, world!"}' | python -m json.tool
 ```
 
-The Swagger UI is available at <http://localhost:8000/docs>.
+## Usage
+
+```bash
+curl -s http://localhost:8000/completions \
+  -H "Content-Type: application/json" \
+  -d '{"model": "llama3:8b", "prompt": "Explain KV-cache in one sentence."}' \
+  | python -m json.tool
+```
+
+Interactive API docs: <http://localhost:8000/docs>
 
 ## Configuration
 
-All settings live in `configs/default.yaml`:
+All settings are in `configs/default.yaml`. The key knobs:
 
-```yaml
-ollama:
-  host: "localhost"
-  port: 11434
-  timeout_seconds: 30
-
-server:
-  host: "0.0.0.0"
-  port: 8000
-
-scheduling:
-  policy: "token_budget"     # fcfs | sjf | priority | token_budget
-  max_batch_size: 8
-  token_budget: 512
-
-memory:
-  limit_gb: 14.0             # soft threshold = 85 % of this
-  safety_margin: 1.10
-
-cache:
-  enabled: true
-  max_size: 1000
-  ttl_seconds: 300
-```
-
-Override any value via environment variable using `LLM_ENGINE_<KEY>` notation.
-
-## Performance Improvements
-
-Eight targeted performance improvements were applied after Phase 7 (each on its own branch):
-
-| # | Improvement | Impact |
+| Key | Default | Notes |
 |---|---|---|
-| perf/1 | O(n²) → O(1) batch token tracking | Scheduling throughput at batch sizes > 16 |
-| perf/2 | Async lock on SemanticCache | Prevents cache corruption under concurrent requests |
-| perf/3 | Lock-free per-model queue creation | Submit throughput under high concurrency |
-| perf/4 | Precompile regex + fix token matching | Speculation latency + acceptance accuracy |
-| perf/5 | `lru_cache` on weight/context estimators | Per-request lookup latency under load |
-| perf/6 | Bounded cancellation set in RequestQueue | Memory bounded to queue size in long-running servers |
-| perf/7 | Config-driven server startup | Correct resource sizing; no code changes to tune |
-| perf/8 | Jitter in OllamaClient retry backoff | Eliminates thundering-herd retry storms |
-
-See [docs/PERFORMANCE_REPORT.md](docs/PERFORMANCE_REPORT.md) for benchmark numbers.
-
-## Test Coverage
-
-The project ships **537 unit tests** (all runnable without a live Ollama instance):
-
-```bash
-pytest tests/unit/ --no-cov   # ~2 s, 537 tests
-```
-
-Coverage areas: API layer, scheduling policies, memory estimation, speculative decoding,
-adaptive throttler, quantization types/mapper/metrics/collector, config validation,
-exception hierarchy, benchmark utilities.
-
-## Performance Tuning
-
-| Goal | Recommendation |
-|---|---|
-| Maximise throughput | Use `TokenBudget` policy, increase `max_batch_size` |
-| Minimise P50 latency | Use `SJF` policy, keep batches small |
-| Reduce memory pressure | Lower `memory.limit_gb`, enable throttler |
-| Improve cache hit rate | Increase `cache.ttl_seconds`, reuse prompts |
-| Faster generation | Enable speculative decoding with a small draft model |
-| Tune retry behaviour | Adjust `ollama.retry_backoff_seconds` in `default.yaml` |
-
-## Project Status
-
-| Phase | Branch | Status |
-|---|---|---|
-| Phase 1 — Ollama Integration | `phase-1-ollama-integration` | ✅ Complete |
-| Phase 2 — Quantization Analysis | `phase-2-quantization-analysis` | ✅ Complete |
-| Phase 3 — Batching & Scheduling | `phase-3-batching-scheduling` | ✅ Complete |
-| Phase 4 — Memory & Capacity | `phase-4-memory-capacity` | ✅ Complete |
-| Phase 5 — API Layer | `phase-5-api-layer` | ✅ Complete |
-| Phase 6 — Speculative Decoding | `phase-6-speculative-decoding` | ✅ Complete |
-| Phase 7 — Production Hardening | `phase-7-production-hardening` | ✅ Complete |
-| perf/1–8 — Performance Improvements | `perf/1` → `perf/8` | ✅ Complete |
-| 300+ new tests | `tests/*-layer` branches | ✅ Complete (537 total) |
-
-## Documentation
-
-- [Architecture Overview](docs/architecture.md)
-- [Performance Report](docs/PERFORMANCE_REPORT.md)
-- [Contributing Guide](CONTRIBUTING.md)
-- [Ollama Integration Guide](docs/ollama_integration.md)
-- [Configuration Guide](docs/configuration.md)
-- [Quantization Analysis Guide](docs/quantization_analysis.md)
-- [Latest Benchmark Results](docs/benchmark_results.md)
+| `scheduling.policy` | `fcfs` | `fcfs` · `sjf` · `priority` · `token_budget` |
+| `scheduling.max_requests_per_batch` | `8` | Requests dispatched per drain cycle |
+| `cache.max_size` | `256` | LRU capacity (entries) |
+| `cache.ttl_seconds` | `300` | Seconds before a cache entry is treated as a miss |
+| `memory.limit_gb` | `14.0` | Hard admission reject threshold (M2 Air default) |
+| `ollama.retry_count` | `3` | Retries on Ollama transport errors |
+| `ollama.retry_backoff_seconds` | `1.0` | Base for exponential + jitter backoff |
 
 ## Development
 
 ```bash
-# Run unit tests (no Ollama required)
+# Tests (no Ollama required, ~2 s, 539 tests)
 pytest tests/unit/ --no-cov
 
-# Run with coverage
+# Coverage report
 pytest tests/unit/ --cov=src/llm_inference_engine --cov-report=term-missing
 
 # Lint
@@ -184,14 +87,14 @@ ruff check src/ tests/
 # Type check
 mypy src/llm_inference_engine --strict
 
-# Run quantization benchmarks (requires Ollama)
+# Quantization benchmarks (requires Ollama)
 python scripts/run_benchmarks.py --config configs/benchmarks.yaml
 ```
 
+## Contributing
+
+See [CONTRIBUTING.md](CONTRIBUTING.md).
+
 ## License
 
-Apache 2.0
-
-## Author
-
-Built as a FAANG-ready portfolio project demonstrating systems design and inference optimization expertise.
+[Apache 2.0](LICENSE)
