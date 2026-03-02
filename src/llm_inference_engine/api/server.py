@@ -69,14 +69,18 @@ def create_app(config: InferenceConfig | None = None) -> FastAPI:
         )
         await ollama_client.connect()
 
-        cache = SemanticCache(max_size=256, ttl_seconds=300.0)
-        memory_estimator = MemoryEstimator()
-        throttler = AdaptiveThrottler(memory_limit_gb=14.0)
+        cache = SemanticCache(
+            max_size=config.cache.max_size,
+            ttl_seconds=config.cache.ttl_seconds,
+        ) if config.cache.enabled else None
+        memory_estimator = MemoryEstimator(safety_margin=config.memory.safety_margin)
+        throttler = AdaptiveThrottler(memory_limit_gb=config.memory.limit_gb)
 
         scheduler = Scheduler(
             dispatch_fn=lambda batch: dispatch_batch(ollama_client, batch),
-            policy=SchedulingPolicy.FCFS,
-            max_requests_per_batch=8,
+            policy=SchedulingPolicy(config.scheduling.policy),
+            max_requests_per_batch=config.scheduling.max_requests_per_batch,
+            max_tokens_per_batch=config.scheduling.max_tokens_per_batch,
         )
 
         aggregator = RequestAggregator(
