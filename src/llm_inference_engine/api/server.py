@@ -169,7 +169,7 @@ def create_app(config: InferenceConfig | None = None) -> FastAPI:
 
     app.add_middleware(
         CORSMiddleware,
-        allow_origins=config.auth.enabled and ["*"] or ["*"],
+        allow_origins=["*"],  # CORS is not an auth boundary; API-key middleware handles auth
         allow_methods=["*"],
         allow_headers=["*"],
     )
@@ -277,8 +277,13 @@ def create_app(config: InferenceConfig | None = None) -> FastAPI:
     # Shared admission guards
     # ------------------------------------------------------------------
 
-    def _check_admission(pending: int) -> None:
-        """Reject early if circuit is open or queue is full."""
+    # Rough per-request memory estimate (GB) for throttler admission.
+    # Conservative heuristic: ~0.5 GB per concurrent inference request
+    # (accounts for KV-cache overhead on typical 7B models).
+    _REQUEST_MEMORY_ESTIMATE_GB = 0.5
+
+    async def _check_admission(pending: int) -> None:
+        """Reject early if circuit is open, queue is full, or memory exhausted."""
         cb: CircuitBreaker = app.state.circuit_breaker
         if not cb.is_available:
             raise HTTPException(
@@ -290,6 +295,15 @@ def create_app(config: InferenceConfig | None = None) -> FastAPI:
             raise HTTPException(
                 status_code=429,
                 detail=f"Queue full ({pending}/{max_q}). Retry later.",
+            )
+        # Memory-based admission control
+        throttler: AdaptiveThrottler = app.state.throttler
+        from llm_inference_engine.optimization.throttler import AdmissionDecision
+        decision = await throttler.check(_REQUEST_MEMORY_ESTIMATE_GB)
+        if decision == AdmissionDecision.REJECT:
+            raise HTTPException(
+                status_code=status.HTTP_503_SERVICE_UNAVAILABLE,
+                detail="Memory limit reached. Retry later.",
             )
 
     # ------------------------------------------------------------------
@@ -308,7 +322,7 @@ def create_app(config: InferenceConfig | None = None) -> FastAPI:
         ollama_client: OllamaClientDep,
     ) -> CompletionResponse | StreamingResponse:
         """Generate a text completion for the given prompt."""
-        _check_admission(aggregator.pending_count)
+        await _check_admission(aggregator.pending_count)
 
         if body.stream:
             REQUESTS_TOTAL.labels(model=body.model, endpoint="completions", status="stream").inc()
@@ -320,6 +334,9 @@ def create_app(config: InferenceConfig | None = None) -> FastAPI:
             )
 
         timeout = body.timeout_seconds or 300.0
+        request_id = f"cmpl-{uuid.uuid4().hex[:8]}"
+        throttler: AdaptiveThrottler = app.state.throttler
+        await throttler.reserve(request_id, _REQUEST_MEMORY_ESTIMATE_GB)
         try:
             response = await asyncio.wait_for(
                 aggregator.complete(
@@ -334,11 +351,13 @@ def create_app(config: InferenceConfig | None = None) -> FastAPI:
                 timeout=timeout,
             )
         except TimeoutError:
+            await throttler.release(request_id, _REQUEST_MEMORY_ESTIMATE_GB)
             REQUESTS_TOTAL.labels(model=body.model, endpoint="completions", status="timeout").inc()
             raise HTTPException(
                 status_code=status.HTTP_504_GATEWAY_TIMEOUT,
                 detail=f"Request timed out after {timeout}s",
             ) from None
+        await throttler.release(request_id, _REQUEST_MEMORY_ESTIMATE_GB)
 
         cb: CircuitBreaker = app.state.circuit_breaker
         if response.result is None:
@@ -403,7 +422,7 @@ def create_app(config: InferenceConfig | None = None) -> FastAPI:
         ollama_client: OllamaClientDep,
     ) -> ChatCompletionResponse | StreamingResponse:
         """Generate a chat completion from a list of messages."""
-        _check_admission(aggregator.pending_count)
+        await _check_admission(aggregator.pending_count)
         messages = [{"role": msg.role, "content": msg.content} for msg in body.messages]
 
         if body.stream:
@@ -416,6 +435,9 @@ def create_app(config: InferenceConfig | None = None) -> FastAPI:
             )
 
         timeout = body.timeout_seconds or 300.0
+        request_id = f"chat-{uuid.uuid4().hex[:8]}"
+        throttler: AdaptiveThrottler = app.state.throttler
+        await throttler.reserve(request_id, _REQUEST_MEMORY_ESTIMATE_GB)
         try:
             response = await asyncio.wait_for(
                 aggregator.chat_complete(
@@ -430,11 +452,13 @@ def create_app(config: InferenceConfig | None = None) -> FastAPI:
                 timeout=timeout,
             )
         except TimeoutError:
+            await throttler.release(request_id, _REQUEST_MEMORY_ESTIMATE_GB)
             REQUESTS_TOTAL.labels(model=body.model, endpoint="chat", status="timeout").inc()
             raise HTTPException(
                 status_code=status.HTTP_504_GATEWAY_TIMEOUT,
                 detail=f"Request timed out after {timeout}s",
             ) from None
+        await throttler.release(request_id, _REQUEST_MEMORY_ESTIMATE_GB)
 
         cb: CircuitBreaker = app.state.circuit_breaker
         if response.result is None:
@@ -499,9 +523,10 @@ async def _stream_completion(
     request_id = f"cmpl-{uuid.uuid4().hex[:12]}"
     start = time.monotonic()
 
-    # Check cache before streaming
+    # Check cache before streaming (param-aware key)
+    cache_key = f"{body.prompt}\x00mt={body.max_tokens}\x00t={body.temperature}"
     if cache is not None:
-        cached = await cache.get(body.model, body.prompt)
+        cached = await cache.get(body.model, cache_key)
         if cached is not None:
             CACHE_HITS.inc()
             event = {
@@ -564,7 +589,7 @@ async def _stream_completion(
     # Cache completed stream response
     if cache is not None and collected_text:
         full_text = "".join(collected_text)
-        await cache.put(body.model, body.prompt, full_text)
+        await cache.put(body.model, cache_key, full_text)
 
     yield "data: [DONE]\n\n"
 
@@ -582,7 +607,8 @@ async def _stream_chat_completion(
     """
     request_id = f"chatcmpl-{uuid.uuid4().hex[:12]}"
     start = time.monotonic()
-    cache_key = "\n".join(f"{m['role']}: {m['content']}" for m in messages)
+    raw_key = "\n".join(f"{m['role']}: {m['content']}" for m in messages)
+    cache_key = f"{raw_key}\x00mt={body.max_tokens}\x00t={body.temperature}"
 
     # Check cache before streaming
     if cache is not None:
