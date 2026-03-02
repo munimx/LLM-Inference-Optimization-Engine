@@ -1,9 +1,7 @@
-"""Semantic cache for inference requests.
+"""Exact-match response cache for inference requests.
 
-Provides an exact-match cache with TTL expiry and LRU eviction.  For the
-current implementation *semantic* similarity is approximated by exact
-prompt/model equality; a vector-similarity extension can be layered on in
-Phase 7 or beyond.
+Provides an exact-match cache with TTL expiry and LRU eviction.  Keys are
+``(model, prompt)`` tuples — only character-identical prompts hit the cache.
 """
 
 import asyncio
@@ -25,12 +23,12 @@ class _CacheEntry:
     hits: int = 0
 
 
-class SemanticCache:
+class ExactMatchCache:
     """Exact-match response cache with TTL and LRU eviction.
 
-    The cache key is a ``(model, prompt)`` tuple.  Entries are evicted
-    when they exceed *ttl_seconds* or when the cache reaches *max_size*
-    (LRU eviction).
+    The cache key is a ``(model, prompt)`` tuple — only character-identical
+    prompts produce a hit.  Entries are evicted when they exceed *ttl_seconds*
+    or when the cache reaches *max_size* (LRU eviction).
 
     All public methods are coroutine-safe: an internal :class:`asyncio.Lock`
     serialises concurrent ``get``/``put`` operations to prevent race
@@ -38,7 +36,7 @@ class SemanticCache:
 
     Usage::
 
-        cache = SemanticCache(max_size=512, ttl_seconds=300)
+        cache = ExactMatchCache(max_size=512, ttl_seconds=300)
         hit = await cache.get("llama3.1:8b", "Hello!")
         if hit is None:
             result = await ollama_generate(...)
@@ -62,7 +60,7 @@ class SemanticCache:
         self._hits = 0
         self._misses = 0
         self._lock = asyncio.Lock()
-        logger.info("semantic_cache_initialized", max_size=max_size, ttl_seconds=ttl_seconds)
+        logger.info("exact_match_cache_initialized", max_size=max_size, ttl_seconds=ttl_seconds)
 
     # ------------------------------------------------------------------
     # Public API
@@ -172,4 +170,7 @@ class SemanticCache:
         return self._max_size
 
 
-__all__ = ["SemanticCache"]
+# Backward-compatible alias
+SemanticCache = ExactMatchCache
+
+__all__ = ["ExactMatchCache", "SemanticCache"]
