@@ -1,6 +1,6 @@
 # LLM Inference Optimization Engine
 
-Request scheduling, semantic caching, and speculative decoding middleware for [Ollama](https://ollama.ai/), exposing an OpenAI-compatible HTTP API.
+Request scheduling, caching, streaming, and inference orchestration middleware for [Ollama](https://ollama.ai/) (with an extensible multi-backend interface), exposing an OpenAI-compatible HTTP API.
 
 [![CI](https://github.com/munimx/LLM-Inference-Optimization-Engine/actions/workflows/ci.yml/badge.svg)](https://github.com/munimx/LLM-Inference-Optimization-Engine/actions/workflows/ci.yml)
 [![Python 3.11+](https://img.shields.io/badge/python-3.11%2B-blue)](https://www.python.org/downloads/)
@@ -8,15 +8,21 @@ Request scheduling, semantic caching, and speculative decoding middleware for [O
 
 ---
 
-Sits between your application and Ollama. Incoming completions requests are checked against a semantic cache, queued by configurable scheduling policy, dispatched to Ollama in concurrent batches, and returned via per-request futures. A draft-model speculation loop and adaptive memory throttler are available as opt-in layers.
+Sits between your application and Ollama (or other inference backends). Incoming requests are checked against an exact-match or embedding-based semantic cache, queued by configurable scheduling policy, dispatched to the backend in concurrent batches, and streamed back via SSE or returned as a complete response. Features include API-key authentication, Prometheus metrics, request coalescing, and adaptive memory throttling.
 
 ## Architecture
 
 ```
-POST /completions
+POST /completions or /chat/completions
        │
        ▼
-SemanticCache ──── hit ───────────────────────────▶ response
+  API-Key Auth (optional)
+       │
+       ▼
+RequestCoalescer ── dedup identical in-flight requests
+       │
+       ▼
+ExactMatchCache / EmbeddingCache ── hit ─────────────▶ response
        │ miss
        ▼
 RequestAggregator
@@ -25,13 +31,13 @@ RequestAggregator
 Scheduler  (per-model RequestQueue + SchedulingPolicy)
        │
        ▼
-dispatch_batch()  ── concurrent httpx ──▶  Ollama
+dispatch_batch()  ── concurrent httpx ──▶  Ollama / InferenceBackend
        │
        ▼
 ResultMapper  (asyncio.Future per request)
        │
        ▼
-CompletionResponse
+CompletionResponse or SSE stream
 ```
 
 See [docs/architecture.md](docs/architecture.md) for component details.
@@ -82,13 +88,27 @@ All settings are in `configs/default.yaml`. The key knobs:
 | `cache.max_size` | `256` | LRU capacity (entries) |
 | `cache.ttl_seconds` | `300` | Seconds before a cache entry is treated as a miss |
 | `memory.limit_gb` | `14.0` | Hard admission reject threshold (M2 Air default) |
+| `auth.enabled` | `false` | Enable API-key authentication |
+| `auth.api_keys` | `[]` | List of valid Bearer tokens |
 | `ollama.retry_count` | `3` | Retries on Ollama transport errors |
 | `ollama.retry_backoff_seconds` | `1.0` | Base for exponential + jitter backoff |
+
+## Key Features
+
+- **SSE Streaming** — `"stream": true` proxies Ollama's token-by-token output via Server-Sent Events
+- **Chat completions** — `/chat/completions` uses Ollama's native `/api/chat` with structured messages
+- **Exact-match cache** — fast LRU cache keyed on `(model, prompt)`
+- **Semantic cache** — embedding-based similarity matching via Ollama's `/api/embed` (opt-in)
+- **Request coalescing** — identical in-flight requests are deduplicated
+- **API-key auth** — optional Bearer-token authentication middleware
+- **Prometheus metrics** — scrapable at `GET /metrics/prometheus`
+- **Multi-backend interface** — abstract `InferenceBackend` ABC; Ollama adapter included, extensible to vLLM/TGI/llama.cpp
+- **Prompt token counting** — uses Ollama's `prompt_eval_count` with char/4 fallback
 
 ## Development
 
 ```bash
-# Tests (no Ollama required, ~2 s, 539 tests)
+# Tests (no Ollama required, ~2 s, 570 tests)
 pytest tests/unit/ --no-cov
 
 # Coverage report
