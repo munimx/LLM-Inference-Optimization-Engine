@@ -90,6 +90,11 @@ All settings are in `configs/default.yaml`. The key knobs:
 
 | Key | Default | Notes |
 |---|---|---|
+| `ollama.host` | `localhost` | Overridable via `OLLAMA_HOST` env var |
+| `ollama.port` | `11434` | Overridable via `OLLAMA_PORT` env var |
+
+| Key | Default | Notes |
+|---|---|---|
 | `scheduling.policy` | `fcfs` | `fcfs` · `sjf` · `priority` · `token_budget` |
 | `scheduling.max_requests_per_batch` | `8` | Requests dispatched per drain cycle |
 | `scheduling.max_queue_depth` | `0` | Max pending requests (0=unlimited); rejects 429 when full |
@@ -108,8 +113,9 @@ All settings are in `configs/default.yaml`. The key knobs:
 
 - **SSE Streaming** — `"stream": true` proxies Ollama's token-by-token output via Server-Sent Events, with cache integration and Prometheus instrumentation
 - **Chat completions** — `/chat/completions` uses Ollama's native `/api/chat` with structured messages
-- **Exact-match cache** — fast LRU cache keyed on `(model, prompt)`; streaming responses also cached
+- **Exact-match cache** — LRU cache keyed on `(model, prompt, max_tokens, temperature)`; case-insensitive and whitespace-normalised. Streaming responses also cached.
 - **Semantic cache** — embedding-based similarity matching via Ollama's `/api/embed` (opt-in via `cache.mode: "semantic"`)
+- **Memory-based admission control** — adaptive throttler rejects requests with HTTP 503 when estimated memory pressure exceeds configured limit
 - **Request coalescing** — identical in-flight chat requests are deduplicated
 - **Circuit breaker** — opens after N consecutive Ollama failures, auto-recovers after cooldown
 - **Queue limits** — configurable `max_queue_depth` with HTTP 429 backpressure
@@ -117,7 +123,8 @@ All settings are in `configs/default.yaml`. The key knobs:
 - **API-key auth** — optional Bearer-token authentication middleware
 - **Prometheus metrics** — scrapable at `GET /metrics/prometheus`, includes streaming latency and token counts
 - **Multi-backend interface** — abstract `InferenceBackend` ABC; Ollama adapter included, extensible to vLLM/TGI/llama.cpp
-- **Docker deployment** — `docker compose up` with Ollama + engine in one command
+- **Docker deployment** — `docker compose up` with Ollama + engine in one command; non-root container with healthcheck
+- **Env var config overrides** — `OLLAMA_HOST` and `OLLAMA_PORT` env vars override YAML config (useful for Docker/K8s)
 - **Prompt token counting** — uses Ollama's `prompt_eval_count` with char/4 fallback
 
 ## Development
@@ -139,10 +146,17 @@ mypy src/llm_inference_engine --strict
 python scripts/run_benchmarks.py --config configs/benchmarks.yaml
 ```
 
+## Caveats
+
+- **Streaming bypasses batching and memory admission** — `stream: true` requests go directly to Ollama without passing through the scheduler or throttler. Cache lookup/storage and Prometheus metrics are still applied.
+- **Batching is concurrent fanout, not true batching** — Ollama's API processes one request at a time. `dispatch_batch()` issues requests concurrently but Ollama serialises them internally.
+- **Memory estimates are heuristic** — the throttler uses a fixed per-request estimate (0.5 GB). There is no feedback from Ollama's actual memory usage.
+
 ## Roadmap
 
 - [ ] Swap aggregator's `OllamaClient` for `InferenceBackend` interface to enable vLLM/TGI backends at runtime
-- [ ] Streaming through scheduler/throttler (currently streaming bypasses batching and memory admission)
+- [ ] Route streaming requests through scheduler/throttler for full admission control
+- [ ] Event-driven batch formation (scheduler.run_loop as background task)
 - [ ] Request preemption — high-priority requests can interrupt running batches
 - [ ] Re-benchmark with current architecture; add TTFT (time to first token) metrics
 - [ ] Cluster mode — multiple engine instances with shared cache (Redis)
