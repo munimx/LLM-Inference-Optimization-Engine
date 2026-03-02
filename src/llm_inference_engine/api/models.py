@@ -18,8 +18,9 @@ class CompletionRequest(BaseModel):
     temperature: float = Field(default=0.7, ge=0.0, le=2.0)
     top_p: float = Field(default=0.9, ge=0.0, le=1.0)
     stop: list[str] = Field(default_factory=list, description="Stop sequences")
-    stream: bool = Field(default=False, description="Stream tokens (not yet implemented)")
+    stream: bool = Field(default=False, description="Stream tokens via SSE")
     priority: int = Field(default=0, ge=0, le=10, description="Request priority (0=lowest)")
+    timeout_seconds: float | None = Field(default=None, ge=1.0, le=600.0, description="Per-request timeout in seconds")
 
     @field_validator("prompt")
     @classmethod
@@ -57,6 +58,7 @@ class ChatCompletionRequest(BaseModel):
     stop: list[str] = Field(default_factory=list)
     stream: bool = Field(default=False)
     priority: int = Field(default=0, ge=0, le=10)
+    timeout_seconds: float | None = Field(default=None, ge=1.0, le=600.0, description="Per-request timeout in seconds")
 
     @field_validator("messages")
     @classmethod
