@@ -1,21 +1,20 @@
-"""Speculative decoding engine.
+"""Speculative decoding engine (**experimental — limited by HTTP API**).
 
-Implements a draft-verify loop:
+.. warning::
 
-1. The **draft model** (small, fast) generates *k* candidate tokens.
-2. The **target model** (large, slow) verifies each candidate in a single
-   forward pass by generating the next token given the prompt + each prefix
-   of the candidate sequence.
-3. Accepted tokens are appended to the output; the first rejected token
-   triggers re-drafting from the corrected position.
-
-This approach can yield a measurable latency reduction when the acceptance
-rate (``accepted / drafted``) is high — typically >0.5 for well-matched
-draft/target model pairs.
+    True speculative decoding requires access to model logits for the
+    accept/reject verification step.  Ollama's HTTP API returns only
+    generated text, so this module performs a *text-level approximation*:
+    it generates with a draft model, generates with the target model,
+    and compares at whitespace-token boundaries.  This is **not**
+    equivalent to the algorithm described in Chen et al. and may double
+    latency instead of reducing it.  Use at your own risk.
 
 Reference: Chen et al., "Accelerating Large Language Model Decoding with
 Speculative Sampling", 2023 (https://arxiv.org/abs/2302.01318).
 """
+
+import warnings
 
 from dataclasses import dataclass, field
 from typing import Any
@@ -105,6 +104,12 @@ draft_manager.DraftModelManager` wrapping the small draft model.
             max_rounds: Maximum draft-verify rounds (guards against infinite loops).
             temperature: Target model sampling temperature (0 = greedy).
         """
+        warnings.warn(
+            "SpeculationEngine is experimental: Ollama's HTTP API does not expose "
+            "model logits, so this module uses text-level comparison instead of "
+            "proper speculative sampling.  Results may be slower than direct generation.",
+            stacklevel=2,
+        )
         if max_output_tokens <= 0:
             raise ValueError("max_output_tokens must be positive")
         if max_rounds <= 0:
