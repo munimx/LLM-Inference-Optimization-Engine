@@ -8,7 +8,7 @@ This guide covers when the engine helps, when it doesn't, and how to configure i
 
 ### ✅ Strong fit: repeated or similar prompts
 
-The semantic cache is keyed on `(model, prompt)`. Any workload where the same prompt recurs gets a **1–2ms** response instead of a multi-second Ollama call.
+The cache is keyed on `(model, normalized_prompt)` where the prompt includes parameter suffixes (`max_tokens`, `temperature`) so that different generation settings produce separate cache entries. Prompts are normalized via `.lower().strip()` to avoid case/whitespace misses.
 
 Examples:
 - FAQ chatbot (20–50 unique questions, many repeat)
