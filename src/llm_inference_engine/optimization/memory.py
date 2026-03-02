@@ -8,6 +8,8 @@ can safely gate requests before OOM conditions occur.
 """
 
 
+import functools
+
 import structlog
 
 from llm_inference_engine.quantization.types import QuantizationLevel
@@ -40,6 +42,34 @@ _SAFETY_MARGIN: float = 1.1
 # each multiplied by the number of heads × head dimension — but we use a
 # simplified per-token-per-layer figure that matches observed Ollama behaviour).
 _KV_CACHE_BYTES_PER_TOKEN_PER_LAYER: float = 512.0
+
+
+@functools.lru_cache(maxsize=256)
+def _cached_weights_gb(
+    num_parameters: int,
+    quantization: QuantizationLevel,
+    safety_margin: float,
+) -> float:
+    """Cached computation of model weight memory in GB.
+
+    Memoises results keyed on (num_parameters, quantization, safety_margin)
+    so repeated calls with the same model config return in O(1).
+    """
+    bytes_per_param = _BYTES_PER_PARAM.get(quantization, 1.0)
+    raw_bytes = num_parameters * bytes_per_param
+    return (raw_bytes * safety_margin) / (1024**3)
+
+
+@functools.lru_cache(maxsize=256)
+def _cached_kv_cache_gb(
+    num_tokens: int,
+    num_layers: int,
+    bytes_per_token_per_layer: float,
+    safety_margin: float,
+) -> float:
+    """Cached computation of KV-cache memory in GB."""
+    raw_bytes = num_tokens * num_layers * bytes_per_token_per_layer
+    return (raw_bytes * safety_margin) / (1024**3)
 
 
 class MemoryEstimator:
@@ -96,9 +126,7 @@ class MemoryEstimator:
         """
         if num_parameters <= 0:
             raise ValueError("num_parameters must be positive")
-        bytes_per_param = _BYTES_PER_PARAM.get(quantization, 1.0)
-        raw_bytes = num_parameters * bytes_per_param
-        gb = (raw_bytes * self._safety_margin) / (1024**3)
+        gb = _cached_weights_gb(num_parameters, quantization, self._safety_margin)
         logger.debug(
             "model_weights_estimated",
             num_parameters=num_parameters,
@@ -129,8 +157,9 @@ class MemoryEstimator:
             raise ValueError("num_tokens must be positive")
         if num_layers <= 0:
             raise ValueError("num_layers must be positive")
-        raw_bytes = num_tokens * num_layers * bytes_per_token_per_layer
-        gb = (raw_bytes * self._safety_margin) / (1024**3)
+        gb = _cached_kv_cache_gb(
+            num_tokens, num_layers, bytes_per_token_per_layer, self._safety_margin
+        )
         logger.debug(
             "kv_cache_estimated",
             num_tokens=num_tokens,
