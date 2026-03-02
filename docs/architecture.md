@@ -9,7 +9,7 @@ The LLM Inference Optimization Engine is built as an orchestration layer on top 
 ```
 ┌──────────────────────────────────────────────┐
 │         Your REST API (Port 8000)            │
-│    /completions, /chat, /batch, /health      │
+│    /completions, /chat/completions, /health   │
 ├──────────────────────────────────────────────┤
 │      Request Orchestration Layer             │
 │  • Batching & Scheduling                     │
@@ -286,23 +286,16 @@ POST /completions
   → Future awaited, CompletionResponse returned
 ```
 
-### Phase 6: Speculative Decoding (`src/llm_inference_engine/optimization/`)
+### Phase 6: Draft Model Infrastructure (`src/llm_inference_engine/optimization/`)
 
 | Component | File | Responsibility |
 |---|---|---|
 | `DraftModelManager` | `draft_manager.py` | Small model lifecycle + candidate generation |
-| `SpeculationEngine` | `speculation.py` | Draft-verify loop with acceptance rate tracking |
 
-**Speculative decoding loop:**
-```
-for each round:
-  1. DraftModelManager.generate_draft(prompt)   → k candidate tokens
-  2. SpeculationEngine._verify(prompt, candidate) → target model check
-  3. Accept matching tokens; correction token replaces first rejection
-  4. Repeat until max_output_tokens or stop signal
-```
-
-**Expected outcome:** Speedup > 1.2× on well-matched draft/target pairs.
+> **Note:** The `SpeculationEngine` (speculative decoding) was removed in
+> Round 5 because HTTP-level APIs cannot expose the logit-level access
+> required for proper draft-verify loops. The `DraftModelManager` remains
+> as infrastructure for future use with backends that support logit access.
 
 ---
 
@@ -328,11 +321,10 @@ Eight targeted improvements were applied to production-critical code paths after
 - Atomic under CPython GIL; eliminates coroutine suspension on every submit
 - Impact: submit throughput under high concurrency
 
-### perf/4 — Regex Precompile + Token Matching Fix
-**Files:** `optimization/draft_manager.py`, `optimization/speculation.py`
+### perf/4 — Regex Precompile
+**Files:** `optimization/draft_manager.py`
 - Moved `re.compile(r"(\s+)")` to module-level constant `_TOKEN_SPLIT_RE`
-- Removed `.lower()` from `_verify()` token comparison to prevent false accepts
-- Impact: speculation latency + acceptance accuracy
+- Impact: draft model candidate generation latency
 
 ### perf/5 — Memoized Estimators
 **Files:** `optimization/memory.py`, `optimization/context.py`
