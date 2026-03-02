@@ -3,6 +3,7 @@
 import asyncio
 import json
 import random
+from collections.abc import AsyncIterator
 from typing import Any
 
 import httpx
@@ -276,12 +277,218 @@ class OllamaClient:
 
         raise OllamaConnectionError("Unexpected error: max retries exhausted")
 
-    async def health_check(self) -> dict[str, Any]:
-        """Perform health check on Ollama service.
+    async def chat(
+        self,
+        model: str,
+        messages: list[dict[str, str]],
+        temperature: float = 0.7,
+        top_p: float = 0.9,
+        max_tokens: int | None = None,
+        stop_sequences: list[str] | None = None,
+    ) -> dict[str, Any]:
+        """Generate a chat completion using Ollama's /api/chat endpoint.
+
+        Args:
+            model: Model name to use
+            messages: List of message dicts with 'role' and 'content' keys
+            temperature: Sampling temperature
+            top_p: Nucleus sampling parameter
+            max_tokens: Maximum tokens to generate
+            stop_sequences: Stop sequences
 
         Returns:
-            Health status dictionary
+            Chat completion result dictionary
+
+        Raises:
+            OllamaTimeoutError: If request times out
+            OllamaConnectionError: If unable to connect
         """
+        if self._client is None:
+            await self.connect()
+
+        payload: dict[str, Any] = {
+            "model": model,
+            "messages": messages,
+            "stream": False,
+            "options": {
+                "temperature": temperature,
+                "top_p": top_p,
+            },
+        }
+
+        if max_tokens is not None:
+            payload["options"]["num_predict"] = max_tokens
+
+        if stop_sequences:
+            payload["options"]["stop"] = stop_sequences
+
+        for attempt in range(self.max_retries):
+            try:
+                client = self._client
+                if client is None:
+                    raise OllamaConnectionError("Failed to initialize client")
+
+                response = await client.post("/api/chat", json=payload)
+                response.raise_for_status()
+
+                try:
+                    result: dict[str, Any] = response.json()
+                except (ValueError, json.JSONDecodeError) as e:
+                    raise OllamaConnectionError(
+                        f"Invalid JSON response from Ollama chat: {e}"
+                    ) from e
+
+                logger.debug(
+                    "chat_completed",
+                    model=model,
+                    tokens=result.get("eval_count", 0),
+                    attempt=attempt + 1,
+                )
+                return result
+
+            except httpx.TimeoutException as e:
+                if attempt == self.max_retries - 1:
+                    raise OllamaTimeoutError(
+                        f"Chat request timed out after {self.max_retries} attempts: {e}"
+                    ) from e
+                await asyncio.sleep(self._retry_backoff * (2**attempt) + random.uniform(0, 1))
+
+            except httpx.HTTPStatusError as e:
+                if e.response.status_code < 500:
+                    raise OllamaConnectionError(f"Chat failed: {e}") from e
+                if attempt == self.max_retries - 1:
+                    raise OllamaConnectionError(
+                        f"Server error after {self.max_retries} attempts: {e}"
+                    ) from e
+                await asyncio.sleep(self._retry_backoff * (2**attempt) + random.uniform(0, 1))
+
+            except httpx.RequestError as e:
+                if attempt == self.max_retries - 1:
+                    raise OllamaConnectionError(
+                        f"Connection error after {self.max_retries} attempts: {e}"
+                    ) from e
+                await asyncio.sleep(self._retry_backoff * (2**attempt) + random.uniform(0, 1))
+
+        raise OllamaConnectionError("Unexpected error: max retries exhausted")
+
+    async def generate_stream(
+        self,
+        model: str,
+        prompt: str,
+        temperature: float = 0.7,
+        top_p: float = 0.9,
+        max_tokens: int | None = None,
+        stop_sequences: list[str] | None = None,
+    ) -> AsyncIterator[dict[str, Any]]:
+        """Stream text generation from Ollama, yielding each chunk.
+
+        Yields:
+            Dicts with at least a ``response`` key containing the token chunk.
+            The final chunk has ``done: true``.
+        """
+        if self._client is None:
+            await self.connect()
+
+        payload: dict[str, Any] = {
+            "model": model,
+            "prompt": prompt,
+            "stream": True,
+            "options": {"temperature": temperature, "top_p": top_p},
+        }
+        if max_tokens is not None:
+            payload["options"]["num_predict"] = max_tokens
+        if stop_sequences:
+            payload["options"]["stop"] = stop_sequences
+
+        client = self._client
+        if client is None:
+            raise OllamaConnectionError("Failed to initialize client")
+
+        async with client.stream("POST", "/api/generate", json=payload) as resp:
+            resp.raise_for_status()
+            async for line in resp.aiter_lines():
+                if not line.strip():
+                    continue
+                try:
+                    chunk = json.loads(line)
+                    yield chunk
+                    if chunk.get("done", False):
+                        return
+                except json.JSONDecodeError:
+                    continue
+
+    async def chat_stream(
+        self,
+        model: str,
+        messages: list[dict[str, str]],
+        temperature: float = 0.7,
+        top_p: float = 0.9,
+        max_tokens: int | None = None,
+        stop_sequences: list[str] | None = None,
+    ) -> AsyncIterator[dict[str, Any]]:
+        """Stream chat completion from Ollama, yielding each chunk.
+
+        Yields:
+            Dicts with a ``message`` key containing ``{"role": ..., "content": ...}``.
+            The final chunk has ``done: true``.
+        """
+        if self._client is None:
+            await self.connect()
+
+        payload: dict[str, Any] = {
+            "model": model,
+            "messages": messages,
+            "stream": True,
+            "options": {"temperature": temperature, "top_p": top_p},
+        }
+        if max_tokens is not None:
+            payload["options"]["num_predict"] = max_tokens
+        if stop_sequences:
+            payload["options"]["stop"] = stop_sequences
+
+        client = self._client
+        if client is None:
+            raise OllamaConnectionError("Failed to initialize client")
+
+        async with client.stream("POST", "/api/chat", json=payload) as resp:
+            resp.raise_for_status()
+            async for line in resp.aiter_lines():
+                if not line.strip():
+                    continue
+                try:
+                    chunk = json.loads(line)
+                    yield chunk
+                    if chunk.get("done", False):
+                        return
+                except json.JSONDecodeError:
+                    continue
+
+    async def embed(self, model: str, text: str) -> list[float]:
+        """Get an embedding vector for *text* using the Ollama ``/api/embed`` endpoint.
+
+        Args:
+            model: Embedding model name (e.g. ``"nomic-embed-text"``).
+            text: Text to embed.
+
+        Returns:
+            Embedding vector as a list of floats.
+        """
+        client = await self._get_client()
+        payload: dict[str, Any] = {"model": model, "input": text}
+        response = await client.post(
+            f"{self.base_url}/api/embed",
+            json=payload,
+            timeout=self.timeout,
+        )
+        response.raise_for_status()
+        data = response.json()
+        # Ollama returns {"embeddings": [[...]]} — take first vector
+        embeddings = data.get("embeddings", [])
+        if embeddings and isinstance(embeddings[0], list):
+            return embeddings[0]
+        return embeddings
+
+    async def health_check(self) -> dict[str, Any]:
         try:
             is_available = await self.is_available()
             if not is_available:
