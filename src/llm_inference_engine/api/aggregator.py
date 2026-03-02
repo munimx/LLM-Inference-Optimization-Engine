@@ -58,6 +58,7 @@ class RequestAggregator:
         ollama_client: OllamaClient,
         scheduler: Scheduler,
         cache: SemanticCache | None = None,
+        drain_delay_seconds: float = 0.05,
     ) -> None:
         """Initialise the aggregator.
 
@@ -68,13 +69,21 @@ ollama_client.OllamaClient`.
 scheduler.Scheduler`.
             cache: Optional :class:`~llm_inference_engine.api.cache.SemanticCache`
                 for response caching.
+            drain_delay_seconds: Time to wait before draining the scheduler,
+                allowing concurrent requests to accumulate into a batch.
         """
         self._client = ollama_client
         self._scheduler = scheduler
         self._cache = cache
         self._mapper = ResultMapper()
         self._total_requests = 0
-        logger.info("request_aggregator_initialized", caching=cache is not None)
+        self._drain_delay = drain_delay_seconds
+        self._drain_locks: dict[str, asyncio.Lock] = {}
+        logger.info(
+            "request_aggregator_initialized",
+            caching=cache is not None,
+            drain_delay_seconds=drain_delay_seconds,
+        )
 
     # ------------------------------------------------------------------
     # Public API
@@ -127,24 +136,115 @@ scheduler.Scheduler`.
         )
 
         # Register a future and submit to scheduler.
-        future = self._mapper.register(request_id)
+        future = await self._mapper.register(request_id)
         await self._scheduler.submit(request)
 
-        # Drain the scheduler and dispatch the batch.
-        responses = await self._scheduler.drain(model)
-        for resp in responses:
-            self._mapper.resolve(resp.request_id, resp)
-            if self._cache is not None and resp.result is not None:
-                await self._cache.put(model, prompt, resp.result.text)
+        # Wait briefly to allow concurrent requests to accumulate, then drain.
+        if self._drain_delay > 0:
+            await asyncio.sleep(self._drain_delay)
+
+        # Use a per-model lock so only one coroutine drains at a time.
+        if model not in self._drain_locks:
+            self._drain_locks[model] = asyncio.Lock()
+        async with self._drain_locks[model]:
+            responses = await self._scheduler.drain(model)
+            for resp in responses:
+                await self._mapper.resolve(resp.request_id, resp)
+                # Cache using this request's prompt (only valid for single-request drain)
+                if self._cache is not None and resp.result is not None:
+                    await self._cache.put(model, prompt, resp.result.text)
 
         # Wait for our specific future.
         try:
             return await asyncio.wait_for(future, timeout=300.0)
         except TimeoutError:
-            self._mapper.reject(request_id, TimeoutError(f"Request {request_id} timed out"))
+            await self._mapper.reject(request_id, TimeoutError(f"Request {request_id} timed out"))
             return Response(
                 request_id=request_id,
                 error="Request timed out",
+                status=RequestStatus.FAILED,
+            )
+
+    async def chat_complete(
+        self,
+        model: str,
+        messages: list[dict[str, str]],
+        max_tokens: int = 256,
+        temperature: float = 0.7,
+        top_p: float = 0.9,
+        stop: list[str] | None = None,
+        priority: int = 0,
+    ) -> Response:
+        """Submit a chat completion request using Ollama's /api/chat endpoint.
+
+        Args:
+            model: Ollama model tag.
+            messages: List of message dicts with 'role' and 'content' keys.
+            max_tokens: Maximum tokens to generate.
+            temperature: Sampling temperature.
+            top_p: Nucleus sampling probability.
+            stop: Stop sequences.
+            priority: Request priority (higher = served sooner).
+
+        Returns:
+            A :class:`~llm_inference_engine.core.types.Response`.
+        """
+        import time
+
+        self._total_requests += 1
+
+        # Build a cache key from the messages hash
+        cache_key = "\n".join(f"{m['role']}: {m['content']}" for m in messages)
+
+        if self._cache is not None:
+            cached = await self._cache.get(model, cache_key)
+            if cached is not None:
+                return self._make_cached_response(model, cache_key, cached)
+
+        request_id = str(uuid.uuid4())
+        start = time.monotonic()
+
+        try:
+            raw: dict[str, Any] = await self._client.chat(
+                model=model,
+                messages=messages,
+                max_tokens=max_tokens,
+                temperature=temperature,
+                top_p=top_p,
+                stop_sequences=stop or None,
+            )
+            latency_ms = (time.monotonic() - start) * 1000
+
+            # Ollama /api/chat returns {"message": {"role": "assistant", "content": "..."}}
+            message_data = raw.get("message", {})
+            text = str(message_data.get("content", ""))
+
+            result = GenerationResult(
+                request_id=request_id,
+                text=text,
+                finish_reason=str(raw.get("done_reason", "stop")),
+                tokens_used=int(raw.get("eval_count", 0)),
+                latency_ms=latency_ms,
+                model=model,
+                metadata={
+                    "prompt_eval_count": raw.get("prompt_eval_count"),
+                    "eval_duration_ns": raw.get("eval_duration"),
+                },
+            )
+
+            if self._cache is not None:
+                await self._cache.put(model, cache_key, text)
+
+            return Response(
+                request_id=request_id,
+                result=result,
+                status=RequestStatus.COMPLETED,
+            )
+        except Exception as exc:
+            logger.error("chat_complete_error", request_id=request_id, error=str(exc))
+            return Response(
+                request_id=request_id,
+                error=str(exc),
                 status=RequestStatus.FAILED,
             )
 
