@@ -152,13 +152,11 @@ class TestContextWindowManager:
         info = manager.calculate("llama3:8b", prompt_tokens=100)
         assert info.available_tokens == info.max_context_tokens - 100
 
-    def test_calculate_prompt_exceeds_context_raises(self) -> None:
+    def test_calculate_prompt_exceeds_context_by_one_raises(self) -> None:
         manager = ContextWindowManager()
         max_ctx = manager.get_max_context_tokens("llama3:8b")
         with pytest.raises(ValueError):
             manager.calculate("llama3:8b", prompt_tokens=max_ctx + 1)
-
-    def test_calculate_boundary_prompt_equals_max(self) -> None:
         manager = ContextWindowManager()
         max_ctx = manager.get_max_context_tokens("llama3:8b")
         # Exactly at max: available_tokens == 0, but does NOT raise
@@ -182,7 +180,7 @@ class TestContextWindowManager:
         tokens = manager.estimate_prompt_tokens(text)
         assert tokens == 25
 
-    def test_estimate_prompt_tokens_custom_ratio(self) -> None:
+    def test_estimate_prompt_tokens_custom_chars_per_token(self) -> None:
         manager = ContextWindowManager()
         text = "x" * 200
         tokens = manager.estimate_prompt_tokens(text, chars_per_token=2.0)

@@ -1,9 +1,6 @@
 """Unit tests for RequestAggregator and dispatch_batch."""
 
-import asyncio
-from unittest.mock import AsyncMock, MagicMock, patch
-
-import pytest
+from unittest.mock import AsyncMock, MagicMock
 
 from llm_inference_engine.api.aggregator import RequestAggregator, dispatch_batch
 from llm_inference_engine.api.cache import SemanticCache
