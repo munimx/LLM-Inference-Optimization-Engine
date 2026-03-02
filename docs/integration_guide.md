@@ -90,7 +90,7 @@ Two differences:
   "object":  "text_completion",
   "model":   "llama3.1:8b",
   "choices": [{"index": 0, "text": "Gradient descent is...", "finish_reason": "stop"}],
-  "usage":   {"prompt_tokens": 0, "completion_tokens": 47, "total_tokens": 47},
+  "usage":   {"prompt_tokens": 12, "completion_tokens": 47, "total_tokens": 59},
   "latency_ms": 1423.7
 }
 ```
@@ -124,7 +124,7 @@ Two differences:
     "message": {"role": "assistant", "content": "Consider training a neural network..."},
     "finish_reason": "stop"
   }],
-  "usage":      {"prompt_tokens": 0, "completion_tokens": 89, "total_tokens": 89},
+  "usage":      {"prompt_tokens": 38, "completion_tokens": 89, "total_tokens": 127},
   "latency_ms": 2841.3
 }
 ```
@@ -258,7 +258,7 @@ resp = client.chat.completions.create(
 print(resp.choices[0].message.content)
 ```
 
-> **Note:** Token usage fields (`prompt_tokens`) are returned as 0 — the engine does not currently tokenise prompts server-side. `completion_tokens` is accurate.
+> **Note:** `prompt_tokens` is populated from Ollama's `prompt_eval_count` when available, with a server-side estimate as fallback. `completion_tokens` is always accurate.
 
 ---
 
@@ -500,7 +500,7 @@ Point `ollama.host` in `configs/default.yaml` at the Docker host IP (or use `hos
 | Endpoint | `/api/generate` · `/api/chat` | `/completions` · `/chat/completions` |
 | Request format | Ollama-native | OpenAI-compatible |
 | Response field | `response` | `choices[0].text` |
-| Streaming | ✅ Supported | ❌ Not yet implemented (`stream: true` is accepted but ignored) |
+| Streaming | ✅ Supported | ✅ SSE streaming with cache integration |
 | Cache | ❌ None | ✅ LRU exact-match (2ms hit latency) |
 | Batching | ❌ None | ✅ Up to 8 concurrent requests per drain cycle |
 | Scheduling | ❌ None | ✅ FCFS / SJF / Priority / Token-budget |
