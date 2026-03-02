@@ -41,12 +41,23 @@ class CacheConfig:
     enabled: bool = True
     max_size: int = 256
     ttl_seconds: float = 300.0
+    mode: str = "exact"  # "exact" or "semantic"
+    embedding_model: str = "nomic-embed-text"
+    similarity_threshold: float = 0.92
 
     def __post_init__(self) -> None:
         if self.max_size <= 0:
             raise ConfigurationError("cache.max_size must be positive")
         if self.ttl_seconds <= 0:
             raise ConfigurationError("cache.ttl_seconds must be positive")
+        if self.mode not in ("exact", "semantic"):
+            raise ConfigurationError(
+                f"cache.mode must be 'exact' or 'semantic', got {self.mode!r}"
+            )
+        if not (0.0 <= self.similarity_threshold <= 1.0):
+            raise ConfigurationError(
+                "cache.similarity_threshold must be between 0.0 and 1.0"
+            )
 
 
 @dataclass
@@ -56,6 +67,10 @@ class SchedulingConfig:
     policy: str = "fcfs"
     max_requests_per_batch: int = 8
     max_tokens_per_batch: int = 0
+    drain_delay_seconds: float = 0.05
+    max_queue_depth: int = 0  # 0 = unlimited
+    circuit_breaker_threshold: int = 5
+    circuit_breaker_cooldown_seconds: float = 30.0
 
     def __post_init__(self) -> None:
         valid_policies = {"fcfs", "sjf", "priority", "token_budget"}
@@ -67,6 +82,14 @@ class SchedulingConfig:
             raise ConfigurationError("scheduling.max_requests_per_batch must be positive")
         if self.max_tokens_per_batch < 0:
             raise ConfigurationError("scheduling.max_tokens_per_batch must be non-negative")
+        if self.drain_delay_seconds < 0:
+            raise ConfigurationError("scheduling.drain_delay_seconds must be non-negative")
+        if self.max_queue_depth < 0:
+            raise ConfigurationError("scheduling.max_queue_depth must be non-negative")
+        if self.circuit_breaker_threshold <= 0:
+            raise ConfigurationError("scheduling.circuit_breaker_threshold must be positive")
+        if self.circuit_breaker_cooldown_seconds < 0:
+            raise ConfigurationError("scheduling.circuit_breaker_cooldown_seconds must be non-negative")
 
 
 @dataclass

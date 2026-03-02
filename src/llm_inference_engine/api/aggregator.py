@@ -21,6 +21,7 @@ from typing import Any
 import structlog
 
 from llm_inference_engine.api.cache import SemanticCache
+from llm_inference_engine.api.coalescer import RequestCoalescer
 from llm_inference_engine.api.result_mapper import ResultMapper
 from llm_inference_engine.core.types import (
     GenerationConfig,
@@ -59,6 +60,7 @@ class RequestAggregator:
         scheduler: Scheduler,
         cache: SemanticCache | None = None,
         drain_delay_seconds: float = 0.05,
+        coalescer: RequestCoalescer | None = None,
     ) -> None:
         """Initialise the aggregator.
 
@@ -71,6 +73,8 @@ scheduler.Scheduler`.
                 for response caching.
             drain_delay_seconds: Time to wait before draining the scheduler,
                 allowing concurrent requests to accumulate into a batch.
+            coalescer: Optional :class:`~llm_inference_engine.api.coalescer.\
+RequestCoalescer` for deduplicating identical in-flight requests.
         """
         self._client = ollama_client
         self._scheduler = scheduler
@@ -79,10 +83,12 @@ scheduler.Scheduler`.
         self._total_requests = 0
         self._drain_delay = drain_delay_seconds
         self._drain_locks: dict[str, asyncio.Lock] = {}
+        self._coalescer = coalescer
         logger.info(
             "request_aggregator_initialized",
             caching=cache is not None,
             drain_delay_seconds=drain_delay_seconds,
+            coalescing=coalescer is not None,
         )
 
     # ------------------------------------------------------------------
@@ -200,6 +206,28 @@ scheduler.Scheduler`.
             cached = await self._cache.get(model, cache_key)
             if cached is not None:
                 return self._make_cached_response(model, cache_key, cached)
+
+        # Coalesce identical in-flight chat requests
+        if self._coalescer is not None:
+            return await self._coalescer.coalesce(
+                model,
+                cache_key,
+                lambda: self._do_chat(model, messages, cache_key, max_tokens, temperature, top_p, stop),
+            )
+
+        return await self._do_chat(model, messages, cache_key, max_tokens, temperature, top_p, stop)
+
+    async def _do_chat(
+        self,
+        model: str,
+        messages: list[dict[str, str]],
+        cache_key: str,
+        max_tokens: int = 256,
+        temperature: float = 0.7,
+        top_p: float = 0.9,
+        stop: list[str] | None = None,
+    ) -> Response:
+        """Perform the actual chat call to Ollama."""
 
         request_id = str(uuid.uuid4())
         start = time.monotonic()
