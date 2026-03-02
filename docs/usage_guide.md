@@ -24,8 +24,8 @@ The scheduler batches concurrent requests and dispatches them together to Ollama
 
 | Concurrency | Model | Wall-time speedup |
 |---|---|---|
-| 4 parallel | `mistral:7b` | 1.21x |
-| 4 parallel | `llama3.1:8b` | 1.44x |
+| 4 parallel | `mistral:7b` | 1.15x |
+| 4 parallel | `llama3.1:8b` | 1.17x |
 
 Combine with cache hits and speedups stack: a concurrent workload with 50% hit rate on `llama3.1:8b` achieves 2.5–3x effective throughput.
 
@@ -39,14 +39,16 @@ Cache TTL defaults to 300 seconds. In a session where the user returns to the sa
 
 ### ❌ Single unique cold requests
 
-If every prompt is different and never repeats, the engine adds 0–25% overhead over direct Ollama:
+If every prompt is different and never repeats, the engine adds negligible overhead on medium-length generation:
 
-| Model | Engine cold overhead |
-|---|---|
-| `llama3.1:8b` | ~1% (negligible) |
-| `mistral:7b` | ~24% |
+| Model | Scenario | Engine cold overhead |
+|---|---|---|
+| `llama3.1:8b` | Medium (~80 tok) | ~−7% (faster²) |
+| `mistral:7b` | Medium (~80 tok) | ~+12% |
+| `llama3.1:8b` | Short (~20 tok) | ~+18% |
+| `mistral:7b` | Short (~20 tok) | ~−10% (noise) |
 
-For `llama3.1:8b` the overhead is noise. For `mistral:7b` with unique prompts, the engine is measurably slower.
+² Negative overhead is due to model warm/cold state variance on M2 Air — not a real engine speedup. Treat ±15% as noise.
 
 ### ❌ Very short generations
 
@@ -163,11 +165,12 @@ The benchmark covers:
 
 | Scenario | Engine vs Direct Ollama |
 |---|---|
-| Cache hit (exact repeat) | **1–2ms** vs seconds — 500–10,000x faster |
+| Cache hit (exact repeat) | **1–3ms** vs seconds — 400–2000x faster |
 | Mixed workload, 60% hit rate | **~2x** wall-time speedup |
-| 4 concurrent users | **1.2–1.4x** |
-| Single unique cold request (`llama3.1:8b`) | **≈ same** (~1% overhead) |
-| Single unique cold request (`mistral:7b`) | **−24%** slower |
+| 4 concurrent users | **1.15–1.17x** |
+| Streaming TTFT | **260–680ms** to first token |
+| Chat completions overhead | **4–6%** negligible |
+| Single unique cold request (medium gen) | **≈ same** (noise-level ±15%) |
 | deepseek-r1 (no cache) | **same or slower** |
 
 **Bottom line**: Use the engine whenever your workload has any prompt repetition. For pure unique-prompt single-user use, route directly to Ollama.
