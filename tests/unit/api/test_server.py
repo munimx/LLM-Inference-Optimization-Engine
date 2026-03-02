@@ -4,7 +4,7 @@ from unittest.mock import AsyncMock, MagicMock
 
 from fastapi.testclient import TestClient
 
-from llm_inference_engine.api.dependencies import get_aggregator, get_cache, get_throttler
+from llm_inference_engine.api.dependencies import get_aggregator, get_cache, get_ollama_client, get_throttler
 from llm_inference_engine.api.server import VERSION, create_app
 from llm_inference_engine.config import InferenceConfig
 from llm_inference_engine.core.types import (
@@ -46,6 +46,7 @@ def _make_test_client(complete_response: Response | None = None) -> TestClient:
 
     mock_aggregator = MagicMock()
     mock_aggregator.complete = AsyncMock(return_value=complete_response)
+    mock_aggregator.chat_complete = AsyncMock(return_value=complete_response)
     mock_aggregator.pending_count = 0
     mock_aggregator.total_requests = 5
 
@@ -71,6 +72,7 @@ def _make_test_client(complete_response: Response | None = None) -> TestClient:
     mock_ollama = MagicMock()
     mock_ollama.is_available = AsyncMock(return_value=True)
     mock_ollama.close = AsyncMock()
+    app.dependency_overrides[get_ollama_client] = lambda: mock_ollama
 
     return TestClient(app, raise_server_exceptions=False)
 

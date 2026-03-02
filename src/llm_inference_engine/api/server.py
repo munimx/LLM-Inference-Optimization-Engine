@@ -4,20 +4,24 @@ Exposes the following endpoints:
 
 - ``GET  /health``               — Liveness/readiness check
 - ``GET  /metrics``              — JSON metrics snapshot
-- ``POST /completions``          — OpenAI-compatible text completion
-- ``POST /chat/completions``     — OpenAI-compatible chat completion
+- ``POST /completions``          — OpenAI-compatible text completion (+ SSE streaming)
+- ``POST /chat/completions``     — OpenAI-compatible chat completion (+ SSE streaming)
 """
 
-from collections.abc import AsyncGenerator
+import json
+import time
+import uuid
+from collections.abc import AsyncGenerator, AsyncIterator
 from contextlib import asynccontextmanager
 
 import structlog
 from fastapi import FastAPI, HTTPException, status
 from fastapi.middleware.cors import CORSMiddleware
+from fastapi.responses import StreamingResponse
 
 from llm_inference_engine.api.aggregator import RequestAggregator, dispatch_batch
 from llm_inference_engine.api.cache import SemanticCache
-from llm_inference_engine.api.dependencies import AggregatorDep, ThrottlerDep
+from llm_inference_engine.api.dependencies import AggregatorDep, OllamaClientDep, ThrottlerDep
 from llm_inference_engine.api.models import (
     ChatCompletionChoice,
     ChatCompletionMessage,
@@ -33,10 +37,22 @@ from llm_inference_engine.api.models import (
 )
 from llm_inference_engine.config import InferenceConfig
 from llm_inference_engine.integration.ollama_client import OllamaClient
+from llm_inference_engine.metrics.prometheus import (
+    ACTIVE_REQUESTS,
+    CACHE_HITS,
+    CACHE_MISSES,
+    CACHE_SIZE,
+    COMMITTED_MEMORY_GB,
+    PROMPT_TOKENS,
+    REQUEST_LATENCY,
+    REQUESTS_TOTAL,
+    TOKENS_GENERATED,
+)
 from llm_inference_engine.optimization.memory import MemoryEstimator
 from llm_inference_engine.optimization.throttler import AdaptiveThrottler
 from llm_inference_engine.scheduling.policies import SchedulingPolicy
 from llm_inference_engine.scheduling.scheduler import Scheduler
+from llm_inference_engine.utils.tokenizer import estimate_prompt_tokens
 
 logger = structlog.get_logger(__name__)
 
@@ -121,10 +137,35 @@ def create_app(config: InferenceConfig | None = None) -> FastAPI:
 
     app.add_middleware(
         CORSMiddleware,
-        allow_origins=["*"],
+        allow_origins=config.auth.enabled and ["*"] or ["*"],
         allow_methods=["*"],
         allow_headers=["*"],
     )
+
+    # --- API-key authentication middleware ---
+    if config.auth.enabled:
+        from starlette.middleware.base import BaseHTTPMiddleware
+        from starlette.requests import Request as StarletteRequest
+        from starlette.responses import JSONResponse
+
+        _public_paths = {"/health", "/docs", "/redoc", "/openapi.json", "/metrics/prometheus"}
+        _valid_keys = frozenset(config.auth.api_keys)
+
+        class _APIKeyMiddleware(BaseHTTPMiddleware):
+            async def dispatch(self, request: StarletteRequest, call_next):  # type: ignore[override]
+                if request.url.path in _public_paths:
+                    return await call_next(request)
+                auth_header = request.headers.get("authorization", "")
+                if auth_header.startswith("Bearer "):
+                    token = auth_header[7:]
+                    if token in _valid_keys:
+                        return await call_next(request)
+                return JSONResponse(
+                    status_code=401,
+                    content={"detail": "Invalid or missing API key"},
+                )
+
+        app.add_middleware(_APIKeyMiddleware)
 
     # ------------------------------------------------------------------
     # Health & Metrics
@@ -164,6 +205,31 @@ def create_app(config: InferenceConfig | None = None) -> FastAPI:
             total_requests=aggregator.total_requests,
         )
 
+    @app.get("/metrics/prometheus", tags=["System"])
+    async def prometheus_metrics() -> StreamingResponse:
+        """Return Prometheus-format metrics for scraping."""
+        from prometheus_client import generate_latest, CONTENT_TYPE_LATEST
+
+        # Update gauges from current state
+        try:
+            throttler_obj: AdaptiveThrottler = app.state.throttler
+            stats = throttler_obj.stats
+            COMMITTED_MEMORY_GB.set(stats.committed_gb)
+            ACTIVE_REQUESTS.set(stats.active_requests)
+        except Exception:
+            pass
+        try:
+            cache_obj = app.state.cache
+            if cache_obj is not None:
+                CACHE_SIZE.set(cache_obj.size)
+        except Exception:
+            pass
+
+        return StreamingResponse(
+            iter([generate_latest()]),
+            media_type=CONTENT_TYPE_LATEST,
+        )
+
     # ------------------------------------------------------------------
     # Completions
     # ------------------------------------------------------------------
@@ -177,8 +243,17 @@ def create_app(config: InferenceConfig | None = None) -> FastAPI:
     async def completions(
         body: CompletionRequest,
         aggregator: AggregatorDep,
-    ) -> CompletionResponse:
+        ollama_client: OllamaClientDep,
+    ) -> CompletionResponse | StreamingResponse:
         """Generate a text completion for the given prompt."""
+        if body.stream:
+            REQUESTS_TOTAL.labels(model=body.model, endpoint="completions", status="stream").inc()
+            return StreamingResponse(
+                _stream_completion(ollama_client, body),
+                media_type="text/event-stream",
+                headers={"Cache-Control": "no-cache", "X-Accel-Buffering": "no"},
+            )
+
         response = await aggregator.complete(
             model=body.model,
             prompt=body.prompt,
@@ -189,12 +264,18 @@ def create_app(config: InferenceConfig | None = None) -> FastAPI:
             priority=body.priority,
         )
         if response.result is None:
+            REQUESTS_TOTAL.labels(model=body.model, endpoint="completions", status="error").inc()
             raise HTTPException(
                 status_code=status.HTTP_503_SERVICE_UNAVAILABLE,
                 detail=response.error or "Inference failed",
             )
         result = response.result
-        return CompletionResponse(
+        prompt_tokens = int(
+            result.metadata.get("prompt_eval_count") or 0
+        ) if result.metadata else 0
+        if prompt_tokens == 0:
+            prompt_tokens = estimate_prompt_tokens(body.prompt)
+        resp = CompletionResponse(
             id=response.request_id,
             model=body.model,
             choices=[
@@ -205,12 +286,26 @@ def create_app(config: InferenceConfig | None = None) -> FastAPI:
                 )
             ],
             usage=UsageInfo(
-                prompt_tokens=0,
+                prompt_tokens=prompt_tokens,
                 completion_tokens=result.tokens_used,
-                total_tokens=result.tokens_used,
+                total_tokens=prompt_tokens + result.tokens_used,
             ),
             latency_ms=result.latency_ms,
         )
+
+        # Instrument Prometheus counters
+        REQUESTS_TOTAL.labels(model=body.model, endpoint="completions", status="ok").inc()
+        REQUEST_LATENCY.labels(model=body.model, endpoint="completions").observe(
+            result.latency_ms / 1000.0
+        )
+        TOKENS_GENERATED.labels(model=body.model).inc(result.tokens_used)
+        PROMPT_TOKENS.labels(model=body.model).inc(prompt_tokens)
+        if result.metadata and result.metadata.get("cache_hit"):
+            CACHE_HITS.inc()
+        else:
+            CACHE_MISSES.inc()
+
+        return resp
 
     # ------------------------------------------------------------------
     # Chat completions
@@ -225,16 +320,22 @@ def create_app(config: InferenceConfig | None = None) -> FastAPI:
     async def chat_completions(
         body: ChatCompletionRequest,
         aggregator: AggregatorDep,
-    ) -> ChatCompletionResponse:
+        ollama_client: OllamaClientDep,
+    ) -> ChatCompletionResponse | StreamingResponse:
         """Generate a chat completion from a list of messages."""
-        # Flatten messages into a single prompt string (Ollama /generate style).
-        prompt = "\n".join(
-            f"{msg.role.upper()}: {msg.content}" for msg in body.messages
-        )
+        messages = [{"role": msg.role, "content": msg.content} for msg in body.messages]
 
-        response = await aggregator.complete(
+        if body.stream:
+            REQUESTS_TOTAL.labels(model=body.model, endpoint="chat", status="stream").inc()
+            return StreamingResponse(
+                _stream_chat_completion(ollama_client, body, messages),
+                media_type="text/event-stream",
+                headers={"Cache-Control": "no-cache", "X-Accel-Buffering": "no"},
+            )
+
+        response = await aggregator.chat_complete(
             model=body.model,
-            prompt=prompt,
+            messages=messages,
             max_tokens=body.max_tokens,
             temperature=body.temperature,
             top_p=body.top_p,
@@ -242,12 +343,19 @@ def create_app(config: InferenceConfig | None = None) -> FastAPI:
             priority=body.priority,
         )
         if response.result is None:
+            REQUESTS_TOTAL.labels(model=body.model, endpoint="chat", status="error").inc()
             raise HTTPException(
                 status_code=status.HTTP_503_SERVICE_UNAVAILABLE,
                 detail=response.error or "Inference failed",
             )
         result = response.result
-        return ChatCompletionResponse(
+        prompt_tokens = int(
+            result.metadata.get("prompt_eval_count") or 0
+        ) if result.metadata else 0
+        if prompt_tokens == 0:
+            prompt_text = " ".join(m["content"] for m in messages)
+            prompt_tokens = estimate_prompt_tokens(prompt_text)
+        resp = ChatCompletionResponse(
             id=response.request_id,
             model=body.model,
             choices=[
@@ -258,14 +366,112 @@ def create_app(config: InferenceConfig | None = None) -> FastAPI:
                 )
             ],
             usage=UsageInfo(
-                prompt_tokens=0,
+                prompt_tokens=prompt_tokens,
                 completion_tokens=result.tokens_used,
-                total_tokens=result.tokens_used,
+                total_tokens=prompt_tokens + result.tokens_used,
             ),
             latency_ms=result.latency_ms,
         )
 
+        # Instrument Prometheus counters
+        REQUESTS_TOTAL.labels(model=body.model, endpoint="chat", status="ok").inc()
+        REQUEST_LATENCY.labels(model=body.model, endpoint="chat").observe(
+            result.latency_ms / 1000.0
+        )
+        TOKENS_GENERATED.labels(model=body.model).inc(result.tokens_used)
+        PROMPT_TOKENS.labels(model=body.model).inc(prompt_tokens)
+
+        return resp
+
     return app
+
+
+# ---------------------------------------------------------------------------
+# SSE streaming helpers
+# ---------------------------------------------------------------------------
+
+
+async def _stream_completion(
+    client: OllamaClient, body: CompletionRequest
+) -> AsyncIterator[str]:
+    """Yield SSE events for a streaming text completion."""
+    request_id = f"cmpl-{uuid.uuid4().hex[:12]}"
+    start = time.monotonic()
+
+    async for chunk in client.generate_stream(
+        model=body.model,
+        prompt=body.prompt,
+        max_tokens=body.max_tokens,
+        temperature=body.temperature,
+        top_p=body.top_p,
+        stop_sequences=body.stop or None,
+    ):
+        token = chunk.get("response", "")
+        done = chunk.get("done", False)
+        finish = "stop" if done else None
+        event = {
+            "id": request_id,
+            "object": "text_completion",
+            "model": body.model,
+            "choices": [{"index": 0, "text": token, "finish_reason": finish}],
+        }
+        if done:
+            event["usage"] = {
+                "prompt_tokens": int(chunk.get("prompt_eval_count", 0)),
+                "completion_tokens": int(chunk.get("eval_count", 0)),
+                "total_tokens": int(chunk.get("prompt_eval_count", 0))
+                + int(chunk.get("eval_count", 0)),
+            }
+            event["latency_ms"] = round((time.monotonic() - start) * 1000, 1)
+        yield f"data: {json.dumps(event)}\n\n"
+
+    yield "data: [DONE]\n\n"
+
+
+async def _stream_chat_completion(
+    client: OllamaClient,
+    body: ChatCompletionRequest,
+    messages: list[dict[str, str]],
+) -> AsyncIterator[str]:
+    """Yield SSE events for a streaming chat completion."""
+    request_id = f"chatcmpl-{uuid.uuid4().hex[:12]}"
+    start = time.monotonic()
+
+    async for chunk in client.chat_stream(
+        model=body.model,
+        messages=messages,
+        max_tokens=body.max_tokens,
+        temperature=body.temperature,
+        top_p=body.top_p,
+        stop_sequences=body.stop or None,
+    ):
+        msg = chunk.get("message", {})
+        token = msg.get("content", "")
+        done = chunk.get("done", False)
+        finish = "stop" if done else None
+        event = {
+            "id": request_id,
+            "object": "chat.completion.chunk",
+            "model": body.model,
+            "choices": [
+                {
+                    "index": 0,
+                    "delta": {"role": "assistant", "content": token},
+                    "finish_reason": finish,
+                }
+            ],
+        }
+        if done:
+            event["usage"] = {
+                "prompt_tokens": int(chunk.get("prompt_eval_count", 0)),
+                "completion_tokens": int(chunk.get("eval_count", 0)),
+                "total_tokens": int(chunk.get("prompt_eval_count", 0))
+                + int(chunk.get("eval_count", 0)),
+            }
+            event["latency_ms"] = round((time.monotonic() - start) * 1000, 1)
+        yield f"data: {json.dumps(event)}\n\n"
+
+    yield "data: [DONE]\n\n"
 
 
 # ---------------------------------------------------------------------------
