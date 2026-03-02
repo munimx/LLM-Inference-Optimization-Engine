@@ -28,11 +28,12 @@ def _make_request(
     max_tokens: int = 64,
     priority: int = 0,
     timestamp: float = 0.0,
+    model: str = MODEL,
 ) -> Request:
     r = Request(
         request_id=request_id,
         prompt="Hello",
-        model=MODEL,
+        model=model,
         generation_config=GenerationConfig(max_tokens=max_tokens),
         priority=priority,
     )
@@ -50,6 +51,11 @@ def _make_response(request_id: str) -> Response:
         model=MODEL,
     )
     return Response(request_id=request_id, result=result, status=RequestStatus.COMPLETED)
+
+
+async def _simple_dispatch(batch: Batch) -> list[Response]:
+    """Simple dispatch function that returns one Response per request."""
+    return [_make_response(r.request_id) for r in batch]
 
 
 # ------------------------------------------------------------------
@@ -284,3 +290,94 @@ class TestScheduler:
         await scheduler.submit(_make_request("small", max_tokens=10))
         await scheduler.drain(MODEL)
         assert dispatched_order[0] == "small"
+
+    async def test_cancel_before_drain_prevents_dispatch(self) -> None:
+        """Cancelling a request before drain should prevent it from being dispatched."""
+        dispatched_ids: list[str] = []
+
+        async def recording_dispatch(batch: Batch) -> list[Response]:
+            for r in batch:
+                dispatched_ids.append(r.request_id)
+            return [_make_response(r.request_id) for r in batch]
+
+        scheduler = Scheduler(dispatch_fn=recording_dispatch, policy=SchedulingPolicy.FCFS)
+        await scheduler.submit(_make_request("r1"))
+        await scheduler.submit(_make_request("r2"))
+        scheduler.cancel("r1", MODEL)
+        await scheduler.drain(MODEL)
+        assert "r1" not in dispatched_ids
+        assert "r2" in dispatched_ids
+
+    async def test_drain_empty_queue_returns_empty(self) -> None:
+        """Draining an empty queue should return an empty list."""
+        scheduler = Scheduler(dispatch_fn=_simple_dispatch, policy=SchedulingPolicy.FCFS)
+        responses = await scheduler.drain(MODEL)
+        assert responses == []
+
+    async def test_queue_size_reflects_submissions(self) -> None:
+        """queue_size should increase after each submit."""
+        scheduler = Scheduler(dispatch_fn=_simple_dispatch, policy=SchedulingPolicy.FCFS)
+        assert scheduler.queue_size(MODEL) == 0
+        await scheduler.submit(_make_request("r1"))
+        assert scheduler.queue_size(MODEL) == 1
+        await scheduler.submit(_make_request("r2"))
+        assert scheduler.queue_size(MODEL) == 2
+
+    async def test_multi_model_queues_are_independent(self) -> None:
+        """Different model queues should be completely independent."""
+        scheduler = Scheduler(dispatch_fn=_simple_dispatch, policy=SchedulingPolicy.FCFS)
+        await scheduler.submit(_make_request("r1", model="llama3:8b"))
+        await scheduler.submit(_make_request("r2", model="mistral:7b"))
+        assert scheduler.queue_size("llama3:8b") == 1
+        assert scheduler.queue_size("mistral:7b") == 1
+
+    async def test_responses_include_request_ids(self) -> None:
+        """drain() should return responses with matching request IDs."""
+        scheduler = Scheduler(dispatch_fn=_simple_dispatch, policy=SchedulingPolicy.FCFS)
+        await scheduler.submit(_make_request("my-req-id"))
+        responses = await scheduler.drain(MODEL)
+        assert any(r.request_id == "my-req-id" for r in responses)
+
+    async def test_cancel_unknown_model_returns_false(self) -> None:
+        """Cancelling from a model queue that doesn't exist should return False."""
+        scheduler = Scheduler(dispatch_fn=_simple_dispatch, policy=SchedulingPolicy.FCFS)
+        result = scheduler.cancel("r1", "nonexistent:model")
+        assert result is False
+
+    async def test_status_set_to_completed_after_drain(self) -> None:
+        """After a successful drain, response status should be COMPLETED."""
+        scheduler = Scheduler(dispatch_fn=_simple_dispatch, policy=SchedulingPolicy.FCFS)
+        await scheduler.submit(_make_request("r1"))
+        responses = await scheduler.drain(MODEL)
+        assert all(r.status == RequestStatus.COMPLETED for r in responses)
+
+    async def test_max_requests_per_batch_limits_drain(self) -> None:
+        """max_requests_per_batch should cap the number dispatched per drain."""
+        scheduler = Scheduler(
+            dispatch_fn=_simple_dispatch,
+            policy=SchedulingPolicy.FCFS,
+            max_requests_per_batch=2,
+        )
+        for i in range(5):
+            await scheduler.submit(_make_request(f"r{i}"))
+        responses = await scheduler.drain(MODEL)
+        assert len(responses) <= 2
+
+    async def test_priority_policy_dispatches_high_priority_first(self) -> None:
+        """Priority policy should dispatch higher priority requests first."""
+        dispatched: list[str] = []
+
+        async def recording(batch: Batch) -> list[Response]:
+            for r in batch:
+                dispatched.append(r.request_id)
+            return [_make_response(r.request_id) for r in batch]
+
+        scheduler = Scheduler(
+            dispatch_fn=recording,
+            policy=SchedulingPolicy.PRIORITY,
+            max_requests_per_batch=10,
+        )
+        await scheduler.submit(_make_request("low", priority=1))
+        await scheduler.submit(_make_request("high", priority=10))
+        await scheduler.drain(MODEL)
+        assert dispatched[0] == "high"
