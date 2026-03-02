@@ -92,6 +92,15 @@ def create_app(config: InferenceConfig | None = None) -> FastAPI:
         )
         await ollama_client.connect()
 
+        # Warn if Ollama is unreachable (non-blocking — it may start later in Docker)
+        try:
+            if not await ollama_client.is_available():
+                logger.warning("ollama_unreachable_at_startup",
+                               host=config.ollama.host, port=config.ollama.port)
+        except Exception:
+            logger.warning("ollama_health_check_failed",
+                           host=config.ollama.host, port=config.ollama.port)
+
         # Build the cache based on configured mode.
         cache: Any = None
         if config.cache.enabled:
