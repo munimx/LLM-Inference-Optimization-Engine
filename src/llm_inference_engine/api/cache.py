@@ -71,13 +71,13 @@ class ExactMatchCache:
 
         Args:
             model: Model tag.
-            prompt: Exact prompt string.
+            prompt: Exact prompt string (normalised internally).
 
         Returns:
             Cached response text, or ``None`` on a miss.
         """
         async with self._lock:
-            key = (model, prompt)
+            key = (model, prompt.lower().strip())
             entry = self._store.get(key)
             if entry is None:
                 self._misses += 1
@@ -104,11 +104,11 @@ class ExactMatchCache:
 
         Args:
             model: Model tag.
-            prompt: Exact prompt string.
+            prompt: Exact prompt string (normalised internally).
             response_text: Generated text to cache.
         """
         async with self._lock:
-            key = (model, prompt)
+            key = (model, prompt.lower().strip())
             if key in self._store:
                 self._store.move_to_end(key)
                 self._store[key].response_text = response_text
@@ -127,13 +127,13 @@ class ExactMatchCache:
 
         Args:
             model: Model tag.
-            prompt: Exact prompt string.
+            prompt: Exact prompt string (normalised internally).
 
         Returns:
             ``True`` if an entry was removed, ``False`` if not found.
         """
         async with self._lock:
-            key = (model, prompt)
+            key = (model, prompt.lower().strip())
             if key in self._store:
                 del self._store[key]
                 return True
