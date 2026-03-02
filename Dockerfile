@@ -12,10 +12,16 @@ RUN pip install --no-cache-dir .
 # --- Runtime ---
 FROM python:3.13-slim
 
+RUN useradd --create-home --shell /bin/bash appuser
+
 WORKDIR /app
 COPY --from=builder /usr/local/lib/python3.13/site-packages /usr/local/lib/python3.13/site-packages
 COPY --from=builder /usr/local/bin /usr/local/bin
 COPY configs/ configs/
+
+RUN chown -R appuser:appuser /app
+
+USER appuser
 
 EXPOSE 8000
 
