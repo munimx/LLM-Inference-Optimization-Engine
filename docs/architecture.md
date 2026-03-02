@@ -230,3 +230,76 @@ The LLM Inference Optimization Engine is built as an orchestration layer on top 
 3. **Model Caching**: Cache model metadata longer
 4. **Configuration Validation**: JSON Schema validation
 5. **Secret Management**: Secure credential handling
+
+---
+
+## Phases 3–6: Implemented Components
+
+### Phase 3: Scheduling Engine (`src/llm_inference_engine/scheduling/`)
+
+| Component | File | Responsibility |
+|---|---|---|
+| `RequestQueue` | `queue.py` | Async priority queue with FIFO tie-breaking and cancellation |
+| `Batch` | `batch.py` | Groups requests with token budget and memory footprint tracking |
+| `SchedulingPolicy` | `policies.py` | FCFS, SJF, Priority, TokenBudget batch formation strategies |
+| `Scheduler` | `scheduler.py` | Per-model queues → policy → batch dispatch orchestration |
+
+**Data flow:**
+```
+submit(Request) → per-model RequestQueue
+drain(model)    → collect requests → form Batch via policy → dispatch_fn(Batch)
+```
+
+### Phase 4: Memory & Capacity Planning (`src/llm_inference_engine/optimization/`)
+
+| Component | File | Responsibility |
+|---|---|---|
+| `MemoryEstimator` | `memory.py` | Predicts peak memory = model weights + KV-cache |
+| `AdaptiveThrottler` | `throttler.py` | ACCEPT / QUEUE / REJECT admission control |
+| `ContextWindowManager` | `context.py` | Model context window lookup and utilisation calculation |
+
+**Memory model:**
+- Model weights: `num_params × bytes_per_param(quantization) × safety_margin`
+- KV-cache: `num_tokens × num_layers × 512 B/token/layer × safety_margin`
+- Throttling thresholds: soft (85 % of limit) and hard (14 GB default for M2 Air)
+
+### Phase 5: API Layer (`src/llm_inference_engine/api/`)
+
+| Component | File | Responsibility |
+|---|---|---|
+| `CompletionRequest/Response` | `models.py` | OpenAI-compatible Pydantic models |
+| `SemanticCache` | `cache.py` | Exact-match LRU cache with TTL eviction |
+| `ResultMapper` | `result_mapper.py` | Maps request IDs to `asyncio.Future` objects |
+| `RequestAggregator` | `aggregator.py` | Cache check → schedule → dispatch → fan-in |
+| FastAPI app | `server.py` | `/completions`, `/chat/completions`, `/health`, `/metrics` |
+| DI providers | `dependencies.py` | FastAPI `Depends()` accessors for shared components |
+
+**Request lifecycle:**
+```
+POST /completions
+  → CompletionRequest validation (Pydantic)
+  → SemanticCache.get() — hit returns immediately
+  → ResultMapper.register() — creates Future
+  → Scheduler.submit() + drain()
+  → dispatch_batch() — concurrent Ollama calls
+  → ResultMapper.resolve() — delivers Response
+  → Future awaited, CompletionResponse returned
+```
+
+### Phase 6: Speculative Decoding (`src/llm_inference_engine/optimization/`)
+
+| Component | File | Responsibility |
+|---|---|---|
+| `DraftModelManager` | `draft_manager.py` | Small model lifecycle + candidate generation |
+| `SpeculationEngine` | `speculation.py` | Draft-verify loop with acceptance rate tracking |
+
+**Speculative decoding loop:**
+```
+for each round:
+  1. DraftModelManager.generate_draft(prompt)   → k candidate tokens
+  2. SpeculationEngine._verify(prompt, candidate) → target model check
+  3. Accept matching tokens; correction token replaces first rejection
+  4. Repeat until max_output_tokens or stop signal
+```
+
+**Expected outcome:** Speedup > 1.2× on well-matched draft/target pairs.
