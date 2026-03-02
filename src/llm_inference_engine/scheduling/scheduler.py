@@ -1,6 +1,5 @@
 """Scheduler: orchestrates queue → policy → batch formation → dispatch."""
 
-import asyncio
 import uuid
 from collections.abc import Callable, Coroutine
 from typing import Any
@@ -152,23 +151,6 @@ Response` objects (one per request in the batch).
             req.status = RequestStatus.COMPLETED
 
         return responses
-
-    async def run_loop(self, model: str, interval_s: float = 0.05) -> None:
-        """Continuously drain the *model* queue in a background loop.
-
-        This coroutine runs indefinitely and should be run as an
-        ``asyncio.Task``.  It polls the queue every *interval_s* seconds
-        and dispatches batches as they become available.
-
-        Args:
-            model: Model whose queue to serve.
-            interval_s: Sleep interval between empty-queue polls.
-        """
-        logger.info("scheduler_loop_started", model=model)
-        while True:
-            responses = await self.drain(model)
-            if not responses:
-                await asyncio.sleep(interval_s)
 
     def queue_size(self, model: str) -> int:
         """Return the current queue depth for *model*.

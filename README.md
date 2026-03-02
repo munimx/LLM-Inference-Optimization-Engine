@@ -155,8 +155,8 @@ python scripts/run_benchmarks.py --config configs/benchmarks.yaml
 ## Roadmap
 
 - [ ] Swap aggregator's `OllamaClient` for `InferenceBackend` interface to enable vLLM/TGI backends at runtime
-- [ ] Route streaming requests through scheduler/throttler for full admission control
-- [ ] Event-driven batch formation (scheduler.run_loop as background task)
+- [x] Route streaming requests through scheduler/throttler for full admission control
+- [ ] Event-driven batch formation (background drain loop)
 - [ ] Request preemption — high-priority requests can interrupt running batches
 - [ ] Re-benchmark with current architecture; add TTFT (time to first token) metrics
 - [ ] Cluster mode — multiple engine instances with shared cache (Redis)
