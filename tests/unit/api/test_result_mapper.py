@@ -90,3 +90,66 @@ class TestResultMapper:
         mapper.resolve("r1", _make_response("r1"))
         assert mapper.pending_count == 0
         assert mapper.is_pending("r1") is False
+
+    async def test_reject_removes_from_pending(self) -> None:
+        """Rejecting a future should remove it from pending count."""
+        mapper = ResultMapper()
+        future = mapper.register("r1")
+        mapper.reject("r1", RuntimeError("boom"))
+        assert mapper.pending_count == 0
+        with pytest.raises(RuntimeError):
+            await future
+
+    async def test_cancel_all_returns_zero_when_empty(self) -> None:
+        """cancel_all() on empty mapper should return 0."""
+        mapper = ResultMapper()
+        assert mapper.cancel_all() == 0
+
+    async def test_multiple_resolutions_independent(self) -> None:
+        """Each future resolves independently."""
+        mapper = ResultMapper()
+        f1 = mapper.register("r1")
+        f2 = mapper.register("r2")
+        mapper.resolve("r1", _make_response("r1"))
+        mapper.resolve("r2", _make_response("r2"))
+        resp1 = await f1
+        resp2 = await f2
+        assert resp1.result is not None
+        assert resp2.result is not None
+        assert resp1.request_id == "r1"
+        assert resp2.request_id == "r2"
+
+    def test_is_pending_after_cancel_all(self) -> None:
+        """After cancel_all(), no IDs should remain pending."""
+        mapper = ResultMapper()
+        mapper.register("r1")
+        mapper.register("r2")
+        mapper.cancel_all()
+        assert not mapper.is_pending("r1")
+        assert not mapper.is_pending("r2")
+
+    async def test_resolve_already_done_future_returns_false(self) -> None:
+        """Resolving an already-resolved future should return False."""
+        mapper = ResultMapper()
+        mapper.register("r1")
+        mapper.resolve("r1", _make_response("r1"))
+        # Future is done now; second resolve should return False
+        result = mapper.resolve("r1", _make_response("r1"))
+        assert result is False
+
+    def test_pending_count_decrements_on_each_resolve(self) -> None:
+        """pending_count should decrease as futures are resolved."""
+        mapper = ResultMapper()
+        mapper.register("r1")
+        mapper.register("r2")
+        mapper.register("r3")
+        assert mapper.pending_count == 3
+        mapper.resolve("r1", _make_response("r1"))
+        assert mapper.pending_count == 2
+        mapper.resolve("r2", _make_response("r2"))
+        assert mapper.pending_count == 1
+
+    def test_reject_unknown_id_returns_false(self) -> None:
+        """Rejecting a completely unknown ID should return False."""
+        mapper = ResultMapper()
+        assert mapper.reject("nonexistent-id", Exception("oops")) is False
