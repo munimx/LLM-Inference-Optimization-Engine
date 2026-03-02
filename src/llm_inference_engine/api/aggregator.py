@@ -122,11 +122,14 @@ RequestCoalescer` for deduplicating identical in-flight requests.
         """
         self._total_requests += 1
 
+        # Build a parameter-aware cache key.
+        cache_prompt = self._cache_key(prompt, max_tokens, temperature)
+
         # Check cache first.
         if self._cache is not None:
-            cached = await self._cache.get(model, prompt)
+            cached = await self._cache.get(model, cache_prompt)
             if cached is not None:
-                return self._make_cached_response(model, prompt, cached)
+                return self._make_cached_response(model, cache_prompt, cached)
 
         request_id = str(uuid.uuid4())
         request = Request(
@@ -146,8 +149,9 @@ RequestCoalescer` for deduplicating identical in-flight requests.
         future = await self._mapper.register(request_id)
         await self._scheduler.submit(request)
 
-        # Wait briefly to allow concurrent requests to accumulate, then drain.
-        if self._drain_delay > 0:
+        # Wait briefly to let concurrent requests accumulate — but skip the
+        # delay when this is the only request in the queue (no batching benefit).
+        if self._drain_delay > 0 and self._scheduler.queue_size(model) > 1:
             await asyncio.sleep(self._drain_delay)
 
         # Use a per-model lock so only one coroutine drains at a time.
@@ -159,11 +163,13 @@ RequestCoalescer` for deduplicating identical in-flight requests.
                 await self._mapper.resolve(resp.request_id, resp)
                 # Cache using this request's prompt (only valid for single-request drain)
                 if self._cache is not None and resp.result is not None:
-                    await self._cache.put(model, prompt, resp.result.text)
+                    await self._cache.put(model, cache_prompt, resp.result.text)
 
-        # Wait for our specific future.
+        # Wait for our specific future.  Use a generous safety-net timeout
+        # (1 hour); the server-level wait_for enforces the user's actual
+        # timeout_seconds, so this only fires for truly stuck futures.
         try:
-            return await asyncio.wait_for(future, timeout=300.0)
+            return await asyncio.wait_for(future, timeout=3600.0)
         except TimeoutError:
             await self._mapper.reject(request_id, TimeoutError(f"Request {request_id} timed out"))
             return Response(
@@ -198,8 +204,9 @@ RequestCoalescer` for deduplicating identical in-flight requests.
         """
         self._total_requests += 1
 
-        # Build a cache key from the messages hash
-        cache_key = "\n".join(f"{m['role']}: {m['content']}" for m in messages)
+        # Build a cache key from the messages hash + generation params
+        raw_key = "\n".join(f"{m['role']}: {m['content']}" for m in messages)
+        cache_key = self._cache_key(raw_key, max_tokens, temperature)
 
         if self._cache is not None:
             cached = await self._cache.get(model, cache_key)
@@ -289,6 +296,11 @@ RequestCoalescer` for deduplicating identical in-flight requests.
     # ------------------------------------------------------------------
     # Private helpers
     # ------------------------------------------------------------------
+
+    @staticmethod
+    def _cache_key(prompt: str, max_tokens: int, temperature: float) -> str:
+        """Build a parameter-aware cache key from prompt and generation params."""
+        return f"{prompt}\x00mt={max_tokens}\x00t={temperature}"
 
     @staticmethod
     def _make_cached_response(model: str, prompt: str, text: str) -> Response:

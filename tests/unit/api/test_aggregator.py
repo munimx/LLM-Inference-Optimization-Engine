@@ -77,13 +77,16 @@ class TestRequestAggregatorInit:
 class TestRequestAggregatorCacheHit:
     """Tests for cache-hit fast path in RequestAggregator.complete()."""
 
+    # Cache keys must include generation params (defaults: max_tokens=256, temperature=0.7)
+    _default_suffix = "\x00mt=256\x00t=0.7"
+
     async def test_cache_hit_returns_cached_response(self) -> None:
         client = _make_ollama_client()
         scheduler = MagicMock(spec=Scheduler)
         scheduler.submit = AsyncMock()
         scheduler.drain = AsyncMock(return_value=[])
         cache = SemanticCache()
-        await cache.put("llama3:8b", "Hello", "cached response")
+        await cache.put("llama3:8b", f"Hello{self._default_suffix}", "cached response")
 
         agg = RequestAggregator(ollama_client=client, scheduler=scheduler, cache=cache)
         response = await agg.complete(model="llama3:8b", prompt="Hello")
@@ -97,7 +100,7 @@ class TestRequestAggregatorCacheHit:
         scheduler.submit = AsyncMock()
         scheduler.drain = AsyncMock(return_value=[])
         cache = SemanticCache()
-        await cache.put("llama3:8b", "Hello", "cached response")
+        await cache.put("llama3:8b", f"Hello{self._default_suffix}", "cached response")
 
         agg = RequestAggregator(ollama_client=client, scheduler=scheduler, cache=cache)
         await agg.complete(model="llama3:8b", prompt="Hello")
@@ -107,7 +110,7 @@ class TestRequestAggregatorCacheHit:
         client = _make_ollama_client()
         scheduler = MagicMock(spec=Scheduler)
         cache = SemanticCache()
-        await cache.put("llama3:8b", "Hello", "cached response")
+        await cache.put("llama3:8b", f"Hello{self._default_suffix}", "cached response")
 
         agg = RequestAggregator(ollama_client=client, scheduler=scheduler, cache=cache)
         await agg.complete(model="llama3:8b", prompt="Hello")
@@ -117,7 +120,7 @@ class TestRequestAggregatorCacheHit:
         client = _make_ollama_client()
         scheduler = MagicMock(spec=Scheduler)
         cache = SemanticCache()
-        await cache.put("llama3:8b", "Hi", "hello there")
+        await cache.put("llama3:8b", f"Hi{self._default_suffix}", "hello there")
 
         agg = RequestAggregator(ollama_client=client, scheduler=scheduler, cache=cache)
         resp = await agg.complete(model="llama3:8b", prompt="Hi")
