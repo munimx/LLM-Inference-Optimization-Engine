@@ -138,7 +138,7 @@ Response` objects (one per request in the batch).
         for req in batch:
             req.status = RequestStatus.SCHEDULED
 
-        logger.info(
+        logger.debug(
             "dispatching_batch",
             batch_id=batch.batch_id,
             model=model,
@@ -196,7 +196,7 @@ Response` objects (one per request in the batch).
         """
         if model not in self._queues:
             self._queues.setdefault(model, RequestQueue(maxsize=self._queue_maxsize))
-            logger.info("model_queue_created", model=model)
+            logger.debug("model_queue_created", model=model)
         return self._queues[model]
 
     async def _collect_batch_requests(self, queue: RequestQueue) -> list[Request]:

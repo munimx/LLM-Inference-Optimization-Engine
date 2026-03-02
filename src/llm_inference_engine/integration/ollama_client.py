@@ -213,7 +213,7 @@ class OllamaClient:
                     logger.error("invalid_json_response_generate", model=model, error=str(e))
                     raise OllamaConnectionError(f"Invalid JSON response from Ollama generation: {e}") from e
 
-                logger.info(
+                logger.debug(
                     "generation_completed",
                     model=model,
                     tokens=result.get("eval_count", 0),
