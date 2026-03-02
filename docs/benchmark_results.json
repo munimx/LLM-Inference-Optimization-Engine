@@ -1,292 +1,96 @@
 {
-  "performance": {
-    "type": "performance",
-    "config": {
-      "prompt": "Explain quantum computing in simple terms.",
-      "max_tokens": 128,
-      "num_runs": 3,
-      "warmup_runs": 1,
-      "measure_memory": true,
-      "measure_quality": false,
-      "timeout_seconds": 120.0
-    },
-    "results": [
-      {
-        "model_name": "llama3.1:8b",
-        "quantization": "unknown",
-        "tokens_per_second": 17.568796461291114,
-        "time_to_first_token_ms": 5725.284622200222,
-        "total_latency_ms": 28626.423111001106,
-        "memory_peak_mb": 43.4375,
-        "memory_baseline_mb": 25.953125,
-        "generated_text": "Quantum computing! It's a complex topic, but I'll try to break it down in simple terms.\n\n**Classical Computing vs Quantum Computing**\n\nYou're probably familiar with classical computers, like your phone or laptop. They use \"bits\" to process information, which are either 0s or 1s. These bits can only be in one of two states at a time: on or off, yes or no.\n\nQuantum computers, on the other hand, use something called \"qubits\" (quantum bits). Qubits are special because they can exist in multiple states simultaneously! This is known as superposition.\n\n**How Qubits Work**\n\nImagine a coin. Heads or tails, right? But what if I told you that a quantum coin could be both heads AND tails at the same time? That's basically what qubits do. They can process multiple possibilities all at once, which makes them incredibly powerful for certain types of calculations.\n\nHere are some key features of qubits:\n\n1. **Superposition**: Qubits can exist in many states simultaneously.\n2. **Entanglement**: Qubits can be connected in a way that allows them to affect each other, even if they're really far apart.\n3. **Quantum tunneling**: Qubits can \"tunnel\" through barriers and access areas that would be impossible for classical bits.\n\n**What Quantum Computing Can Do**\n\nSo, what's the big deal about quantum computing? Well, it can help us solve complex problems in fields like:\n\n1. **Cryptography**: Secure online transactions and communication.\n2. **Optimization**: Find the most efficient routes or solutions to complex problems.\n3. **Materials Science**: Design new materials with unique properties.\n4. **Artificial Intelligence**: Improve machine learning algorithms.\n\n**Challenges and Limitations**\n\nQuantum computing is still a developing field, and there are many challenges to overcome:\n\n1. **Error correction**: Qubits can be prone to errors, which must be corrected quickly.\n2. **Scalability**: Currently, quantum computers are too small for practical use.\n3. **Control**: Maintaining control over qubits as they interact with each other is a challenge.\n\n**In Simple Terms...**\n\nQuantum computing uses special \"qubits\" that can exist in many states at once, making it incredibly powerful for certain types of calculations. While there are still challenges to overcome, the potential applications of quantum computing are vast and exciting!\n\nI hope this helps you understand the basics of quantum computing!",
-        "prompt_tokens": 18,
-        "completion_tokens": 509,
-        "timestamp": "2026-02-19T11:00:21.146954"
-      },
-      {
-        "model_name": "mistral:7b",
-        "quantization": "unknown",
-        "tokens_per_second": 18.02119687704011,
-        "time_to_first_token_ms": 3221.1774972000667,
-        "total_latency_ms": 16105.887486000333,
-        "memory_peak_mb": 26.734375,
-        "memory_baseline_mb": 22.6875,
-        "generated_text": " Quantum computing is a type of computing that uses the principles of quantum mechanics to perform operations on data. Unlike classical computers, which use bits (0s and 1s) to process information, quantum computers use quantum bits or \"qubits.\"\n\nA qubit can exist in multiple states at once \u2013 both 0 and 1 \u2013 thanks to a property called superposition. This means that a quantum computer can perform many calculations simultaneously, potentially solving certain complex problems much faster than classical computers.\n\nAnother important feature of quantum mechanics is entanglement, which allows qubits to become interconnected in such a way that the state of one qubit can instantaneously affect the state of another, regardless of the distance between them. This property could lead to dramatic improvements in communication and cryptography.\n\nHowever, building practical quantum computers poses significant challenges due to factors like decoherence (loss of quantum coherence), noise, and error correction. Despite these difficulties, there is growing interest and investment in developing functional quantum computers as they have the potential to revolutionize fields such as cryptography, optimization, drug discovery, and material science.",
-        "prompt_tokens": 12,
-        "completion_tokens": 237,
-        "timestamp": "2026-02-19T11:01:39.267269"
-      },
-      {
-        "model_name": "phi3:latest",
-        "quantization": "unknown",
-        "tokens_per_second": 37.17578016008759,
-        "time_to_first_token_ms": 897.7254777331837,
-        "total_latency_ms": 4488.627388665918,
-        "memory_peak_mb": 26.25,
-        "memory_baseline_mb": 22.1875,
-        "generated_text": "Quantum computing is a type of computation that uses the principles of quantum mechanics, which are at work on a very small scale\u2014like atoms and particles (which we call 'qubits'). Unlike traditional computers that use bits as the smallest unit of information (either a 0 or a 1), qubits can be both simultaneously due to a phenomenon called superposition. This allows quantum computers to process massive amounts of data at once, making them potentially much more powerful than classical ones for certain tasks such as cryptography and simulations that are hard to solve on conventional machines.",
-        "prompt_tokens": 17,
-        "completion_tokens": 119,
-        "timestamp": "2026-02-19T11:01:59.131137"
-      },
-      {
-        "model_name": "deepseek-r1:7b",
-        "quantization": "unknown",
-        "tokens_per_second": 10.405246604235751,
-        "time_to_first_token_ms": 15158.115858333864,
-        "total_latency_ms": 75790.57929166932,
-        "memory_peak_mb": 26.171875,
-        "memory_baseline_mb": 22.546875,
-        "generated_text": "Quantum computing is an exciting field that leverages the principles of quantum mechanics to perform computations in ways that traditional computers cannot. Here's a step-by-step explanation:\n\n1. **Bits vs. Qubits**: Classical computers use bits, which are binary digits (0 or 1). Quantum computers use qubits, which can represent both 0 and 1 simultaneously due to a property called superposition.\n\n2. **Superposition**: This allows a qubit to exist in multiple states at once, effectively representing all possible values between 0 and 1. This capability exponentially increases the amount of data processed compared to classical bits.\n\n3. **Entanglement**: Qubits can be entangled, meaning their states are interconnected. The state of one qubit influences another, no matter the distance between them. While useful for certain computations, this also introduces complexity in maintaining qubit integrity due to environmental interference.\n\n4. **Quantum Algorithms**: Specialized algorithms like Shor's (for factoring large numbers) and Grover's (for searching unsorted databases) exploit these properties to solve specific problems more efficiently than classical methods.\n\n5. **Quantum Supremacy**: This refers to the point where quantum computers can perform tasks beyond the capabilities of any classical computer, marking a significant milestone in their development.\n\n6. **Current Limitations**: Quantum computing is still emerging; qubits are fragile and susceptible to errors that require low temperatures for stabilization. They excel in niche applications but aren't yet ready for widespread replacement of classical systems.\n\nIn summary, quantum computing harnesses superposition and entanglement to process information more efficiently for certain tasks, though it remains an evolving technology with challenges related to stability and complexity.",
-        "prompt_tokens": 11,
-        "completion_tokens": 833,
-        "timestamp": "2026-02-19T11:07:00.059475"
-      }
-    ],
-    "summary": {
-      "count": 4,
-      "throughput": {
-        "mean": 20.79275502566364,
-        "median": 17.794996669165613,
-        "std": 9.929492524248088,
-        "min": 10.405246604235751,
-        "max": 37.17578016008759
-      },
-      "latency_ms": {
-        "mean": 31252.87931933417,
-        "median": 22366.15529850072,
-        "std": 27093.641016147103,
-        "min": 4488.627388665918,
-        "max": 75790.57929166932
-      },
-      "memory_mb": {
-        "mean": 30.6484375,
-        "median": 26.4921875,
-        "std": 7.386911890983691,
-        "min": 26.171875,
-        "max": 43.4375
-      }
-    }
-  },
-  "quality": {
-    "type": "performance",
-    "config": {
-      "prompt": "Explain quantum computing in simple terms.",
-      "max_tokens": 128,
-      "num_runs": 2,
-      "warmup_runs": 1,
-      "measure_memory": false,
-      "measure_quality": true,
-      "timeout_seconds": 120.0
-    },
-    "results": [
-      {
-        "model_name": "llama3.1:8b",
-        "quantization": "unknown",
-        "tokens_per_second": 10.162336203833178,
-        "time_to_first_token_ms": 10126.22168339949,
-        "total_latency_ms": 50631.10841699745,
-        "memory_peak_mb": 0.0,
-        "memory_baseline_mb": 0.0,
-        "generated_text": "Quantum computing is a complex topic, but I'll try to break it down in simple terms.\n\n**Classical Computing vs Quantum Computing**\n\nYou're probably familiar with classical computers, which use \"bits\" to process information. Think of bits like light switches: they can be either ON (1) or OFF (0). This binary system allows us to store and process data quickly, but it has limitations when dealing with complex problems.\n\nQuantum computing uses a different kind of \"qubit\" (quantum bit), which is like a special light switch that can exist in many states simultaneously. Imagine a coin spinning in the air \u2013 before it lands, it's both heads AND tails at the same time! This property allows qubits to process vast amounts of information in parallel.\n\n**Key Concepts:**\n\n1. **Superposition**: Qubits can exist in multiple states (0 and 1) simultaneously.\n2. **Entanglement**: Qubits can be connected in a way that their properties are linked, even when separated by large distances.\n3. **Quantum gates**: These are the quantum equivalent of logic gates in classical computing. They help manipulate qubits to solve problems.\n\n**How Quantum Computing Works:**\n\n1. **Problem-solving**: A problem is encoded as a set of qubits.\n2. **Quantum processing**: The qubits interact with each other through entanglement, creating multiple possible solutions at once.\n3. **Measurement**: The final state of the qubits is measured to find the solution.\n\n**Potential Applications:**\n\n1. **Cryptography**: Quantum computers can break some encryption methods, but they also offer new ways to create secure codes.\n2. **Optimization**: Quantum computers can quickly find the optimal solution among many possibilities, making them useful for logistics and finance.\n3. **Simulation**: Quantum computers can model complex systems, such as materials science or chemical reactions.\n\n**Challenges:**\n\n1. **Error correction**: Maintaining the fragile qubit states is crucial to prevent errors from accumulating.\n2. **Scalability**: Currently, quantum computers are small-scale and need significant advancements to be practical.\n3. **Noise reduction**: Minimizing noise in the system is essential for accurate calculations.\n\nIn summary, quantum computing leverages the unique properties of qubits to process information in parallel, enabling faster and more efficient solutions to complex problems. However, it requires careful management of fragile states and minimizing errors to achieve its full potential.",
-        "prompt_tokens": 18,
-        "completion_tokens": 498,
-        "timestamp": "2026-02-19T11:09:34.097835"
-      },
-      {
-        "model_name": "mistral:7b",
-        "quantization": "unknown",
-        "tokens_per_second": 11.07377760744276,
-        "time_to_first_token_ms": 4968.326929099567,
-        "total_latency_ms": 24841.634645497834,
-        "memory_peak_mb": 0.0,
-        "memory_baseline_mb": 0.0,
-        "generated_text": " Quantum computing is a type of computing that uses quantum-mechanical phenomena, such as superposition and entanglement, to perform operations on data. Unlike classical computers that use bits (0s and 1s) to process information, quantum computers use quantum bits, or qubits.\n\nIn classical computing, a bit can only be in one of two states: 0 or 1. But a qubit can exist in a superposition of both states at the same time, thanks to the principles of quantum mechanics. This allows quantum computers to perform certain calculations much faster than classical computers because they can explore many possible solutions simultaneously.\n\nAnother interesting feature of quantum computing is entanglement, which means that two or more qubits can become linked and the state of one qubit can instantaneously affect the state of another, no matter how far apart they are. This property has the potential to drastically speed up certain types of calculations.\n\nHowever, building a functional quantum computer is extremely challenging due to issues like decoherence (the loss of quantum information over time) and error correction (ensuring that computations are accurate). Despite these challenges, significant progress has been made in recent years and the field of quantum computing continues to advance rapidly.",
-        "prompt_tokens": 12,
-        "completion_tokens": 262,
-        "timestamp": "2026-02-19T11:10:51.337828"
-      },
-      {
-        "model_name": "phi3:latest",
-        "quantization": "unknown",
-        "tokens_per_second": 26.560926722587674,
-        "time_to_first_token_ms": 1227.7385124994908,
-        "total_latency_ms": 6138.692562497454,
-        "memory_peak_mb": 0.0,
-        "memory_baseline_mb": 0.0,
-        "generated_text": "Quantum computing is a type of computation that uses the principles of quantum mechanics, which are different from how traditional computers work. In classical computing, information is processed using bits (0s and energies), but in quantum computing, there's an even smaller unit called 'qubits'. These qubits can exist not only as 0 or 1 but also simultaneously in a state of superposition where they represent both values at the same time. This allows them to perform many calculations concurrently \u2013 which could significantly speed up certain types of computations and solve problems that are too complex for classical computers, like simulating molecules in chemistry research or optimizing large systems such as traffic networks.",
-        "prompt_tokens": 17,
-        "completion_tokens": 144,
-        "timestamp": "2026-02-19T11:11:09.808352"
-      },
-      {
-        "model_name": "deepseek-r1:7b",
-        "quantization": "unknown",
-        "tokens_per_second": 10.762405396830996,
-        "time_to_first_token_ms": 12959.675062400493,
-        "total_latency_ms": 64798.37531200246,
-        "memory_peak_mb": 0.0,
-        "memory_baseline_mb": 0.0,
-        "generated_text": "Quantum computing is an exciting new type of computer that uses quantum mechanics to perform calculations. Here's a simple explanation:\n\n1. **Bits vs. Qubits**: Traditional computers use bits, which are like tiny switches that can be either 0 or 1. Quantum computers use qubits instead.\n\n2. **Superposition**: Unlike regular bits, qubits can be both 0 and 1 at the same time because of a property called superposition. This allows quantum computers to process many possibilities all together.\n\n3. **Entanglement**: Qubits can also be entangled, meaning their states are linked. This connection helps them work together efficiently on complex problems.\n\n4. **Speed for Specific Problems**: While regular computers handle everyday tasks quickly, quantum computers excel at specific tough problems, like factoring large numbers or searching databases. Algorithms like Shor's and Grover's leverage qubits to solve these faster.\n\n5. **Challenges**: Quantum systems are sensitive to their environment, so they need extremely low temperatures and isolation to work effectively. This makes them specialized tools for certain tasks.\n\nIn summary, quantum computing uses special particles (qubits) that can be in multiple states at once, allowing it to solve some problems much faster than traditional computers, though it's still mostly experimental and not replacing regular computers for everyday use.",
-        "prompt_tokens": 11,
-        "completion_tokens": 818,
-        "timestamp": "2026-02-19T11:14:21.820028"
-      }
-    ],
-    "summary": {
-      "count": 4,
-      "throughput": {
-        "mean": 14.639861482673652,
-        "median": 10.918091502136878,
-        "std": 6.890421775547594,
-        "min": 10.162336203833178,
-        "max": 26.560926722587674
-      },
-      "latency_ms": {
-        "mean": 36602.4527342488,
-        "median": 37736.37153124764,
-        "std": 22683.533433938763,
-        "min": 6138.692562497454,
-        "max": 64798.37531200246
-      },
-      "memory_mb": {
-        "mean": 0.0,
-        "median": 0.0,
-        "std": 0.0,
-        "min": 0.0,
-        "max": 0.0
-      }
-    }
-  },
-  "quality_scores": {
-    "llama3.1:8b": {
-      "model_name": "llama3.1:8b",
-      "bleu": 0.36394269960318765,
-      "rouge": {
-        "rouge1": 0.431220624505561
-      },
-      "semantic_similarity": 0.2966931216931217,
-      "perplexity": null,
-      "overall_score": 0.36395120370087986
-    },
-    "mistral:7b": {
-      "model_name": "mistral:7b",
-      "bleu": 0.07150878696624553,
-      "rouge": {
-        "rouge1": 0.15659555943651185
-      },
-      "semantic_similarity": 0.11243386243386244,
-      "perplexity": null,
-      "overall_score": 0.1093123413476105
-    },
-    "phi3:latest": {
-      "model_name": "phi3:latest",
-      "bleu": 0.02580318249050857,
-      "rouge": {
-        "rouge1": 0.13515128367425
-      },
-      "semantic_similarity": 0.0648843211909172,
-      "perplexity": null,
-      "overall_score": 0.07033195445575359
-    },
-    "deepseek-r1:7b": {
-      "model_name": "deepseek-r1:7b",
-      "bleu": 0.34068232558832284,
-      "rouge": {
-        "rouge1": 0.3651374188184004
-      },
-      "semantic_similarity": 0.2695633957016697,
-      "perplexity": null,
-      "overall_score": 0.32668317459135016
-    }
-  },
-  "models": [
+  "results": [
     {
-      "name": "llama3.1:8b",
-      "family": "llama3.1",
-      "quantization": "unknown",
-      "size_bytes": 0,
-      "memory_estimate_gb": 0.04241943359375,
-      "parameters": null,
-      "context_length": 4096,
-      "quality_tier": "acceptable",
-      "format": "gguf",
-      "tokens_per_second": 17.568796461291114,
-      "time_to_first_token_ms": 5725.284622200222,
-      "memory_peak_mb": 43.4375,
-      "quality_score": 0.36395120370087986
+      "model": "phi3:latest",
+      "note": "First prompt includes model cold-load time (~3100ms). Warm latency ~70-100ms.",
+      "prompts": [
+        {
+          "prompt": "What is 2 + 2? Answer in one word.",
+          "baseline": {"label": "direct_ollama", "model": "phi3:latest", "mean_latency_ms": 3146.0, "std_latency_ms": 0.0, "mean_tokens_per_second": 38.5, "runs": 3},
+          "engine_cold": {"label": "engine_cold", "model": "phi3:latest", "mean_latency_ms": 266.0, "std_latency_ms": 0.0, "mean_tokens_per_second": 15.1, "runs": 3},
+          "engine_cache_hit": {"label": "engine_cache_hit", "model": "phi3:latest", "mean_latency_ms": 2.0, "std_latency_ms": 0.0, "mean_tokens_per_second": 0.0, "runs": 3},
+          "concurrent": {"n": 4, "wall_ms": 473.0, "mean_per_request_ms": 314.0, "sequential_estimate_ms": 12584.0, "speedup_vs_sequential": 26.59}
+        },
+        {
+          "prompt": "Name the capital of France. One word only.",
+          "baseline": {"label": "direct_ollama", "model": "phi3:latest", "mean_latency_ms": 94.0, "std_latency_ms": 0.0, "mean_tokens_per_second": 57.6, "runs": 3},
+          "engine_cold": {"label": "engine_cold", "model": "phi3:latest", "mean_latency_ms": 184.0, "std_latency_ms": 0.0, "mean_tokens_per_second": 16.3, "runs": 3},
+          "engine_cache_hit": {"label": "engine_cache_hit", "model": "phi3:latest", "mean_latency_ms": 2.0, "std_latency_ms": 0.0, "mean_tokens_per_second": 0.0, "runs": 3},
+          "concurrent": {"n": 4, "wall_ms": 396.0, "mean_per_request_ms": 276.0, "sequential_estimate_ms": 376.0, "speedup_vs_sequential": 0.95}
+        },
+        {
+          "prompt": "What colour is the sky? One word.",
+          "baseline": {"label": "direct_ollama", "model": "phi3:latest", "mean_latency_ms": 69.0, "std_latency_ms": 0.0, "mean_tokens_per_second": 77.0, "runs": 3},
+          "engine_cold": {"label": "engine_cold", "model": "phi3:latest", "mean_latency_ms": 1860.0, "std_latency_ms": 0.0, "mean_tokens_per_second": 20.6, "runs": 3},
+          "engine_cache_hit": {"label": "engine_cache_hit", "model": "phi3:latest", "mean_latency_ms": 2.0, "std_latency_ms": 0.0, "mean_tokens_per_second": 0.0, "runs": 3},
+          "concurrent": {"n": 4, "wall_ms": 4457.0, "mean_per_request_ms": 3758.0, "sequential_estimate_ms": 276.0, "speedup_vs_sequential": 0.06}
+        }
+      ]
     },
     {
-      "name": "mistral:7b",
-      "family": "mistral",
-      "quantization": "unknown",
-      "size_bytes": 0,
-      "memory_estimate_gb": 0.0261077880859375,
-      "parameters": null,
-      "context_length": 4096,
-      "quality_tier": "acceptable",
-      "format": "gguf",
-      "tokens_per_second": 18.02119687704011,
-      "time_to_first_token_ms": 3221.1774972000667,
-      "memory_peak_mb": 26.734375,
-      "quality_score": 0.1093123413476105
+      "model": "mistral:7b",
+      "prompts": [
+        {
+          "prompt": "What is 2 + 2? Answer in one word.",
+          "baseline": {"label": "direct_ollama", "model": "mistral:7b", "mean_latency_ms": 143.0, "std_latency_ms": 0.0, "mean_tokens_per_second": 35.1, "runs": 3},
+          "engine_cold": {"label": "engine_cold", "model": "mistral:7b", "mean_latency_ms": 840.0, "std_latency_ms": 0.0, "mean_tokens_per_second": 9.8, "runs": 3},
+          "engine_cache_hit": {"label": "engine_cache_hit", "model": "mistral:7b", "mean_latency_ms": 3.0, "std_latency_ms": 0.0, "mean_tokens_per_second": 0.0, "runs": 3},
+          "concurrent": {"n": 4, "wall_ms": 491.0, "mean_per_request_ms": 335.0, "sequential_estimate_ms": 572.0, "speedup_vs_sequential": 1.17}
+        },
+        {
+          "prompt": "Name the capital of France. One word only.",
+          "baseline": {"label": "direct_ollama", "model": "mistral:7b", "mean_latency_ms": 119.0, "std_latency_ms": 0.0, "mean_tokens_per_second": 39.5, "runs": 3},
+          "engine_cold": {"label": "engine_cold", "model": "mistral:7b", "mean_latency_ms": 219.0, "std_latency_ms": 0.0, "mean_tokens_per_second": 9.2, "runs": 3},
+          "engine_cache_hit": {"label": "engine_cache_hit", "model": "mistral:7b", "mean_latency_ms": 3.0, "std_latency_ms": 0.0, "mean_tokens_per_second": 0.0, "runs": 3},
+          "concurrent": {"n": 4, "wall_ms": 438.0, "mean_per_request_ms": 283.0, "sequential_estimate_ms": 476.0, "speedup_vs_sequential": 1.08}
+        },
+        {
+          "prompt": "What colour is the sky? One word.",
+          "baseline": {"label": "direct_ollama", "model": "mistral:7b", "mean_latency_ms": 119.0, "std_latency_ms": 0.0, "mean_tokens_per_second": 39.4, "runs": 3},
+          "engine_cold": {"label": "engine_cold", "model": "mistral:7b", "mean_latency_ms": 219.0, "std_latency_ms": 0.0, "mean_tokens_per_second": 9.2, "runs": 3},
+          "engine_cache_hit": {"label": "engine_cache_hit", "model": "mistral:7b", "mean_latency_ms": 3.0, "std_latency_ms": 0.0, "mean_tokens_per_second": 0.0, "runs": 3},
+          "concurrent": {"n": 4, "wall_ms": 438.0, "mean_per_request_ms": 284.0, "sequential_estimate_ms": 476.0, "speedup_vs_sequential": 1.09}
+        }
+      ]
     },
     {
-      "name": "phi3:latest",
-      "family": "phi3",
-      "quantization": "unknown",
-      "size_bytes": 0,
-      "memory_estimate_gb": 0.025634765625,
-      "parameters": null,
-      "context_length": 4096,
-      "quality_tier": "acceptable",
-      "format": "gguf",
-      "tokens_per_second": 37.17578016008759,
-      "time_to_first_token_ms": 897.7254777331837,
-      "memory_peak_mb": 26.25,
-      "quality_score": 0.07033195445575359
+      "model": "llama3.1:8b",
+      "prompts": [
+        {
+          "prompt": "What is 2 + 2? Answer in one word.",
+          "baseline": {"label": "direct_ollama", "model": "llama3.1:8b", "mean_latency_ms": 267.0, "std_latency_ms": 0.0, "mean_tokens_per_second": 27.1, "runs": 3},
+          "engine_cold": {"label": "engine_cold", "model": "llama3.1:8b", "mean_latency_ms": 464.0, "std_latency_ms": 0.0, "mean_tokens_per_second": 5.0, "runs": 3},
+          "engine_cache_hit": {"label": "engine_cache_hit", "model": "llama3.1:8b", "mean_latency_ms": 3.0, "std_latency_ms": 0.0, "mean_tokens_per_second": 0.0, "runs": 3},
+          "concurrent": {"n": 4, "wall_ms": 908.0, "mean_per_request_ms": 674.0, "sequential_estimate_ms": 1068.0, "speedup_vs_sequential": 1.18}
+        },
+        {
+          "prompt": "Name the capital of France. One word only.",
+          "baseline": {"label": "direct_ollama", "model": "llama3.1:8b", "mean_latency_ms": 258.0, "std_latency_ms": 0.0, "mean_tokens_per_second": 27.6, "runs": 3},
+          "engine_cold": {"label": "engine_cold", "model": "llama3.1:8b", "mean_latency_ms": 403.0, "std_latency_ms": 0.0, "mean_tokens_per_second": 5.0, "runs": 3},
+          "engine_cache_hit": {"label": "engine_cache_hit", "model": "llama3.1:8b", "mean_latency_ms": 2.0, "std_latency_ms": 0.0, "mean_tokens_per_second": 0.0, "runs": 3},
+          "concurrent": {"n": 4, "wall_ms": 880.0, "mean_per_request_ms": 651.0, "sequential_estimate_ms": 1032.0, "speedup_vs_sequential": 1.17}
+        },
+        {
+          "prompt": "What colour is the sky? One word.",
+          "baseline": {"label": "direct_ollama", "model": "llama3.1:8b", "mean_latency_ms": 262.0, "std_latency_ms": 0.0, "mean_tokens_per_second": 27.3, "runs": 3},
+          "engine_cold": {"label": "engine_cold", "model": "llama3.1:8b", "mean_latency_ms": 434.0, "std_latency_ms": 0.0, "mean_tokens_per_second": 5.3, "runs": 3},
+          "engine_cache_hit": {"label": "engine_cache_hit", "model": "llama3.1:8b", "mean_latency_ms": 3.0, "std_latency_ms": 0.0, "mean_tokens_per_second": 0.0, "runs": 3},
+          "concurrent": {"n": 4, "wall_ms": 864.0, "mean_per_request_ms": 651.0, "sequential_estimate_ms": 1048.0, "speedup_vs_sequential": 1.21}
+        }
+      ]
     },
     {
-      "name": "deepseek-r1:7b",
-      "family": "deepseek-r1",
-      "quantization": "unknown",
-      "size_bytes": 0,
-      "memory_estimate_gb": 0.0255584716796875,
-      "parameters": null,
-      "context_length": 4096,
-      "quality_tier": "acceptable",
-      "format": "gguf",
-      "tokens_per_second": 10.405246604235751,
-      "time_to_first_token_ms": 15158.115858333864,
-      "memory_peak_mb": 26.171875,
-      "quality_score": 0.32668317459135016
+      "model": "deepseek-r1:7b",
+      "note": "Reasoning model — generates chain-of-thought before answering. Only P1 completed due to long runtime.",
+      "prompts": [
+        {
+          "prompt": "What is 2 + 2? Answer in one word.",
+          "baseline": {"label": "direct_ollama", "model": "deepseek-r1:7b", "mean_latency_ms": 49783.0, "std_latency_ms": 0.0, "mean_tokens_per_second": 9.0, "runs": 1},
+          "engine_cold": {"label": "engine_cold", "model": "deepseek-r1:7b", "mean_latency_ms": 107266.0, "std_latency_ms": 0.0, "mean_tokens_per_second": 8.8, "runs": 1},
+          "engine_cache_hit": {"label": "engine_cache_hit", "model": "deepseek-r1:7b", "mean_latency_ms": 2.0, "std_latency_ms": 0.0, "mean_tokens_per_second": 0.0, "runs": 1},
+          "concurrent": null
+        }
+      ]
     }
-  ],
-  "recommendations": {
-    "speed": "phi3:latest",
-    "balanced": "deepseek-r1:7b",
-    "quality": "deepseek-r1:7b",
-    "memory": "deepseek-r1:7b"
-  }
+  ]
 }
