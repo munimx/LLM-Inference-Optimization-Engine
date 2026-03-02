@@ -204,3 +204,94 @@ class TestSpeculationEngine:
         )
         result = await engine.generate("The ")
         assert result.rejected_tokens > 0
+
+
+class TestSpeculationResultDataclass:
+    def test_acceptance_rate_zero_when_no_drafts(self) -> None:
+        result = SpeculationResult(
+            text="", total_tokens=0, drafted_tokens=0,
+            accepted_tokens=0, rejected_tokens=0, num_drafts=0
+        )
+        assert result.acceptance_rate == 0.0
+
+    def test_acceptance_rate_partial(self) -> None:
+        result = SpeculationResult(
+            text="hello", total_tokens=2, drafted_tokens=4,
+            accepted_tokens=2, rejected_tokens=2, num_drafts=1
+        )
+        assert result.acceptance_rate == pytest.approx(0.5)
+
+    def test_acceptance_rate_full(self) -> None:
+        result = SpeculationResult(
+            text="hi there", total_tokens=2, drafted_tokens=2,
+            accepted_tokens=2, rejected_tokens=0, num_drafts=1
+        )
+        assert result.acceptance_rate == pytest.approx(1.0)
+
+    def test_speedup_estimate_never_below_one(self) -> None:
+        result = SpeculationResult(
+            text="", total_tokens=0, drafted_tokens=4,
+            accepted_tokens=0, rejected_tokens=4, num_drafts=1
+        )
+        assert result.speedup_estimate >= 1.0
+
+    def test_speedup_estimate_high_acceptance(self) -> None:
+        result = SpeculationResult(
+            text="hello world", total_tokens=4, drafted_tokens=4,
+            accepted_tokens=4, rejected_tokens=0, num_drafts=1
+        )
+        assert result.speedup_estimate >= 1.0
+
+    def test_speedup_estimate_no_drafts(self) -> None:
+        result = SpeculationResult(
+            text="", total_tokens=0, drafted_tokens=0,
+            accepted_tokens=0, rejected_tokens=0, num_drafts=0
+        )
+        assert result.speedup_estimate == 1.0
+
+
+class TestSpeculationEngineEdges:
+    def test_max_output_tokens_zero_raises(self) -> None:
+        import pytest
+        from unittest.mock import AsyncMock
+        from llm_inference_engine.optimization.draft_manager import DraftModelManager
+        mock = AsyncMock()
+        dm = DraftModelManager(mock, max_draft_tokens=4)
+        with pytest.raises(ValueError, match="max_output_tokens"):
+            SpeculationEngine(mock, dm, target_model="llama3.1:8b", max_output_tokens=0)
+
+    def test_max_rounds_zero_raises(self) -> None:
+        from unittest.mock import AsyncMock
+        from llm_inference_engine.optimization.draft_manager import DraftModelManager
+        mock = AsyncMock()
+        dm = DraftModelManager(mock, max_draft_tokens=4)
+        with pytest.raises(ValueError, match="max_rounds"):
+            SpeculationEngine(mock, dm, target_model="llama3.1:8b", max_rounds=0)
+
+    async def test_max_rounds_limits_iterations(self) -> None:
+        """Engine must stop after max_rounds even if output not exhausted."""
+        draft_client = _make_mock_client(["word "] * 20)
+        target_client = _make_mock_client(["word "] * 20)
+        draft_manager = DraftModelManager(draft_client, max_draft_tokens=2)
+        engine = SpeculationEngine(
+            target_client, draft_manager,
+            target_model="llama3.1:8b",
+            max_output_tokens=100,
+            max_rounds=2,
+        )
+        result = await engine.generate("prompt")
+        assert result.num_drafts <= 2
+
+    async def test_generate_returns_speculation_result(self) -> None:
+        draft_client = _make_mock_client(["hello "] * 5)
+        target_client = _make_mock_client(["hello "] * 5)
+        draft_manager = DraftModelManager(draft_client, max_draft_tokens=3)
+        engine = SpeculationEngine(
+            target_client, draft_manager,
+            target_model="llama3.1:8b",
+            max_output_tokens=10,
+        )
+        result = await engine.generate("test prompt")
+        assert isinstance(result, SpeculationResult)
+        assert result.total_tokens >= 0
+        assert result.num_drafts >= 1

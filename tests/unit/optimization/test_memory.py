@@ -96,3 +96,78 @@ class TestMemoryEstimator:
         for level in QuantizationLevel:
             gb = est.estimate_model_weights_gb(7_000_000_000, level)
             assert gb > 0, f"Expected positive estimate for {level}"
+
+    def test_estimate_kv_cache_gb_valid(self) -> None:
+        est = MemoryEstimator()
+        kv = est.estimate_kv_cache_gb(num_tokens=2048, num_layers=32)
+        assert kv > 0
+
+    def test_estimate_kv_cache_zero_tokens_raises(self) -> None:
+        est = MemoryEstimator()
+        with pytest.raises(ValueError):
+            est.estimate_kv_cache_gb(num_tokens=0, num_layers=32)
+
+    def test_estimate_kv_cache_zero_layers_raises(self) -> None:
+        est = MemoryEstimator()
+        with pytest.raises(ValueError):
+            est.estimate_kv_cache_gb(num_tokens=2048, num_layers=0)
+
+    def test_estimate_total_gb(self) -> None:
+        est = MemoryEstimator()
+        total = est.estimate_total_gb(7_000_000_000, QuantizationLevel.Q4_K_M, 2048, 32)
+        assert total > 0
+
+    def test_estimate_total_greater_than_weights_alone(self) -> None:
+        est = MemoryEstimator()
+        weights = est.estimate_model_weights_gb(7_000_000_000, QuantizationLevel.Q4_K_M)
+        total = est.estimate_total_gb(7_000_000_000, QuantizationLevel.Q4_K_M, 2048, 32)
+        assert total > weights
+
+    def test_infer_num_layers_under_1b(self) -> None:
+        # <1B → 12
+        assert MemoryEstimator.infer_num_layers(500_000_000) == 12
+
+    def test_infer_num_layers_1b(self) -> None:
+        # 1B is NOT < 1B, falls to next bucket <4B → 28
+        assert MemoryEstimator.infer_num_layers(1_000_000_000) == 28
+
+    def test_infer_num_layers_4b(self) -> None:
+        # 4B is NOT < 4B, falls to next bucket <8B → 32
+        assert MemoryEstimator.infer_num_layers(4_000_000_000) == 32
+
+    def test_infer_num_layers_7b(self) -> None:
+        # 7B < 8B → 32
+        assert MemoryEstimator.infer_num_layers(7_000_000_000) == 32
+
+    def test_infer_num_layers_8b(self) -> None:
+        # 8B is NOT < 8B, falls to next bucket <14B → 40
+        assert MemoryEstimator.infer_num_layers(8_000_000_000) == 40
+
+    def test_infer_num_layers_14b(self) -> None:
+        # 14B is NOT < 14B, falls to next bucket <34B → 48
+        assert MemoryEstimator.infer_num_layers(14_000_000_000) == 48
+
+    def test_infer_num_layers_34b(self) -> None:
+        # 34B is NOT < 34B, falls through → 60
+        assert MemoryEstimator.infer_num_layers(34_000_000_000) == 60
+
+    def test_infer_num_layers_70b(self) -> None:
+        assert MemoryEstimator.infer_num_layers(70_000_000_000) == 60
+
+    def test_bytes_per_param_fp16(self) -> None:
+        assert MemoryEstimator.bytes_per_param(QuantizationLevel.FP16) == 2.0
+
+    def test_bytes_per_param_q4_k_m(self) -> None:
+        bpp = MemoryEstimator.bytes_per_param(QuantizationLevel.Q4_K_M)
+        assert 0.4 < bpp < 0.6  # ~0.5 bytes per param
+
+    def test_lru_cache_returns_same_result(self) -> None:
+        """LRU-cached function should return consistent results."""
+        est = MemoryEstimator()
+        r1 = est.estimate_model_weights_gb(7_000_000_000, QuantizationLevel.Q4_K_M)
+        r2 = est.estimate_model_weights_gb(7_000_000_000, QuantizationLevel.Q4_K_M)
+        assert r1 == r2
+
+    def test_invalid_safety_margin_raises(self) -> None:
+        with pytest.raises(ValueError):
+            MemoryEstimator(safety_margin=0.9)

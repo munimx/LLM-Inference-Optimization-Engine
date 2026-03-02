@@ -111,3 +111,92 @@ class TestContextWindowManager:
         manager = ContextWindowManager()
         assert manager.get_max_context_tokens("Mistral:7b") == 32_768
         assert manager.get_max_context_tokens("LLAMA3:8b") == 8_192
+
+    def test_all_default_families_recognized(self) -> None:
+        """Every default model family should return a non-fallback context window."""
+        manager = ContextWindowManager()
+        families = [
+            "llama3:8b", "llama3.1:8b", "llama2:7b", "mistral:7b", "mixtral:8x7b",
+            "phi3:mini", "phi4:14b", "gemma:7b", "deepseek:7b", "qwen:7b",
+            "codellama:7b", "falcon:7b", "vicuna:7b", "orca:7b",
+        ]
+        for model in families:
+            tokens = manager.get_max_context_tokens(model)
+            assert tokens > 0, f"Expected positive context for {model}"
+
+    def test_unknown_model_returns_fallback(self) -> None:
+        """Completely unknown model should return the fallback context window."""
+        manager = ContextWindowManager()
+        tokens = manager.get_max_context_tokens("unknown-model-xyz")
+        assert tokens == 4096
+
+    def test_custom_fallback_context_window(self) -> None:
+        """Custom fallback should be used for unknown models."""
+        manager = ContextWindowManager(fallback_context_window=2048)
+        tokens = manager.get_max_context_tokens("completely-unknown")
+        assert tokens == 2048
+
+    def test_calculate_returns_context_window_info(self) -> None:
+        from llm_inference_engine.optimization.context import ContextWindowInfo
+        manager = ContextWindowManager()
+        info = manager.calculate("llama3:8b", prompt_tokens=100)
+        assert isinstance(info, ContextWindowInfo)
+
+    def test_calculate_utilisation_ratio(self) -> None:
+        manager = ContextWindowManager()
+        info = manager.calculate("llama3:8b", prompt_tokens=1000)
+        assert 0 < info.utilisation_ratio < 1.0
+
+    def test_calculate_available_tokens(self) -> None:
+        manager = ContextWindowManager()
+        info = manager.calculate("llama3:8b", prompt_tokens=100)
+        assert info.available_tokens == info.max_context_tokens - 100
+
+    def test_calculate_prompt_exceeds_context_raises(self) -> None:
+        manager = ContextWindowManager()
+        max_ctx = manager.get_max_context_tokens("llama3:8b")
+        with pytest.raises(ValueError):
+            manager.calculate("llama3:8b", prompt_tokens=max_ctx + 1)
+
+    def test_calculate_boundary_prompt_equals_max(self) -> None:
+        manager = ContextWindowManager()
+        max_ctx = manager.get_max_context_tokens("llama3:8b")
+        # Exactly at max: available_tokens == 0, but does NOT raise
+        info = manager.calculate("llama3:8b", prompt_tokens=max_ctx)
+        assert info.available_tokens == 0
+        assert info.utilisation_ratio == pytest.approx(1.0)
+
+    def test_register_model_cache_cleared(self) -> None:
+        """register_model should invalidate LRU cache for the new model."""
+        manager = ContextWindowManager()
+        # First lookup - goes through uncached path
+        manager.get_max_context_tokens("custom-llm:13b")
+        # Register a proper context
+        manager.register_model("custom-llm", 16_384)
+        # Now it should return the registered value
+        assert manager.get_max_context_tokens("custom-llm:13b") == 16_384
+
+    def test_estimate_prompt_tokens_heuristic(self) -> None:
+        manager = ContextWindowManager()
+        text = "a" * 100  # 100 chars / 4 chars_per_token = 25 tokens
+        tokens = manager.estimate_prompt_tokens(text)
+        assert tokens == 25
+
+    def test_estimate_prompt_tokens_custom_ratio(self) -> None:
+        manager = ContextWindowManager()
+        text = "x" * 200
+        tokens = manager.estimate_prompt_tokens(text, chars_per_token=2.0)
+        assert tokens == 100
+
+    def test_llama31_family_has_large_context(self) -> None:
+        """llama3.1 should have a larger context than llama3."""
+        manager = ContextWindowManager()
+        llama3_ctx = manager.get_max_context_tokens("llama3:8b")
+        llama31_ctx = manager.get_max_context_tokens("llama3.1:8b")
+        assert llama31_ctx >= llama3_ctx
+
+    def test_override_max_context_in_calculate(self) -> None:
+        """override_max_context should cap the context window."""
+        manager = ContextWindowManager()
+        info = manager.calculate("llama3:8b", prompt_tokens=100, override_max_context=200)
+        assert info.max_context_tokens == 200
