@@ -49,7 +49,7 @@ class ResultMapper:
     # Public API
     # ------------------------------------------------------------------
 
-    def register(self, request_id: str) -> asyncio.Future[Response]:
+    async def register(self, request_id: str) -> asyncio.Future[Response]:
         """Create and register an :class:`asyncio.Future` for *request_id*.
 
         Args:
@@ -62,15 +62,16 @@ class ResultMapper:
         Raises:
             ValueError: If *request_id* is already registered.
         """
-        if request_id in self._pending:
-            raise ValueError(f"Request {request_id!r} is already registered")
-        loop = asyncio.get_event_loop()
-        future: asyncio.Future[Response] = loop.create_future()
-        self._pending[request_id] = _PendingRequest(future=future)
+        async with self._lock:
+            if request_id in self._pending:
+                raise ValueError(f"Request {request_id!r} is already registered")
+            loop = asyncio.get_event_loop()
+            future: asyncio.Future[Response] = loop.create_future()
+            self._pending[request_id] = _PendingRequest(future=future)
         logger.debug("result_mapper_registered", request_id=request_id)
         return future
 
-    def resolve(self, request_id: str, response: Response) -> bool:
+    async def resolve(self, request_id: str, response: Response) -> bool:
         """Resolve the future for *request_id* with *response*.
 
         Args:
@@ -80,7 +81,8 @@ class ResultMapper:
         Returns:
             ``True`` if the future was resolved, ``False`` if not found.
         """
-        entry = self._pending.pop(request_id, None)
+        async with self._lock:
+            entry = self._pending.pop(request_id, None)
         if entry is None:
             logger.warning("result_mapper_unknown_request", request_id=request_id)
             return False
@@ -89,7 +91,7 @@ class ResultMapper:
         logger.debug("result_mapper_resolved", request_id=request_id)
         return True
 
-    def reject(self, request_id: str, error: Exception) -> bool:
+    async def reject(self, request_id: str, error: Exception) -> bool:
         """Reject the future for *request_id* with *error*.
 
         Args:
@@ -99,7 +101,8 @@ class ResultMapper:
         Returns:
             ``True`` if the future was rejected, ``False`` if not found.
         """
-        entry = self._pending.pop(request_id, None)
+        async with self._lock:
+            entry = self._pending.pop(request_id, None)
         if entry is None:
             return False
         if not entry.future.done():
@@ -107,18 +110,19 @@ class ResultMapper:
         logger.warning("result_mapper_rejected", request_id=request_id, error=str(error))
         return True
 
-    def cancel_all(self) -> int:
+    async def cancel_all(self) -> int:
         """Cancel all pending futures (e.g. during shutdown).
 
         Returns:
             Number of futures cancelled.
         """
-        count = 0
-        for _request_id, entry in list(self._pending.items()):
-            if not entry.future.done():
-                entry.future.cancel()
-                count += 1
-        self._pending.clear()
+        async with self._lock:
+            count = 0
+            for _request_id, entry in list(self._pending.items()):
+                if not entry.future.done():
+                    entry.future.cancel()
+                    count += 1
+            self._pending.clear()
         logger.info("result_mapper_all_cancelled", count=count)
         return count
 
