@@ -131,6 +131,33 @@ RequestCoalescer` for deduplicating identical in-flight requests.
             if cached is not None:
                 return self._make_cached_response(model, cache_prompt, cached)
 
+        # Coalesce identical in-flight completion requests
+        if self._coalescer is not None:
+            result: Response = await self._coalescer.coalesce(
+                model,
+                cache_prompt,
+                lambda: self._do_complete(
+                    model, prompt, cache_prompt, max_tokens, temperature, top_p, stop, priority
+                ),
+            )
+            return result
+
+        return await self._do_complete(
+            model, prompt, cache_prompt, max_tokens, temperature, top_p, stop, priority
+        )
+
+    async def _do_complete(
+        self,
+        model: str,
+        prompt: str,
+        cache_prompt: str,
+        max_tokens: int = 256,
+        temperature: float = 0.7,
+        top_p: float = 0.9,
+        stop: list[str] | None = None,
+        priority: int = 0,
+    ) -> Response:
+        """Perform the actual completion through the scheduler."""
         request_id = str(uuid.uuid4())
         request = Request(
             request_id=request_id,
