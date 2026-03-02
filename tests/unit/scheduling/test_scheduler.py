@@ -344,7 +344,7 @@ class TestScheduler:
         result = scheduler.cancel("r1", "nonexistent:model")
         assert result is False
 
-    async def test_status_set_to_completed_after_drain(self) -> None:
+    async def test_status_set_to_completed_after_simple_dispatch(self) -> None:
         """After a successful drain, response status should be COMPLETED."""
         scheduler = Scheduler(dispatch_fn=_simple_dispatch, policy=SchedulingPolicy.FCFS)
         await scheduler.submit(_make_request("r1"))

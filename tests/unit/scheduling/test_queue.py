@@ -2,8 +2,6 @@
 
 import asyncio
 
-import pytest
-
 from llm_inference_engine.core.types import GenerationConfig, Request, RequestStatus
 from llm_inference_engine.scheduling.queue import RequestQueue
 

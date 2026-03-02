@@ -252,8 +252,6 @@ class TestSpeculationResultDataclass:
 
 class TestSpeculationEngineEdges:
     def test_max_output_tokens_zero_raises(self) -> None:
-        import pytest
-        from unittest.mock import AsyncMock
         from llm_inference_engine.optimization.draft_manager import DraftModelManager
         mock = AsyncMock()
         dm = DraftModelManager(mock, max_draft_tokens=4)
@@ -261,7 +259,6 @@ class TestSpeculationEngineEdges:
             SpeculationEngine(mock, dm, target_model="llama3.1:8b", max_output_tokens=0)
 
     def test_max_rounds_zero_raises(self) -> None:
-        from unittest.mock import AsyncMock
         from llm_inference_engine.optimization.draft_manager import DraftModelManager
         mock = AsyncMock()
         dm = DraftModelManager(mock, max_draft_tokens=4)
