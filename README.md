@@ -36,6 +36,15 @@ CompletionResponse
 
 See [docs/architecture.md](docs/architecture.md) for component details.
 
+## Documentation
+
+| Doc | What it covers |
+|-----|----------------|
+| [integration_guide.md](docs/integration_guide.md) | How to connect your app to the engine (Python, Node.js, OpenAI SDK, Ollama Cloud FAQ) |
+| [usage_guide.md](docs/usage_guide.md) | When the engine helps vs hurts, config tuning, per-model characteristics |
+| [PERFORMANCE_REPORT.md](docs/PERFORMANCE_REPORT.md) | Measured benchmark results across all 4 local models |
+| [architecture.md](docs/architecture.md) | Component design and data flow |
+
 ## Setup
 
 ```bash
@@ -60,7 +69,7 @@ Interactive API docs: <http://localhost:8000/docs>
 
 Send the same prompt twice — the second call returns in **~2ms** (cache hit, Ollama not contacted).
 
-See [docs/usage_guide.md](docs/usage_guide.md) for when the engine helps, when it doesn't, and how to configure it for your workload.
+See [docs/integration_guide.md](docs/integration_guide.md) to connect your existing app. See [docs/usage_guide.md](docs/usage_guide.md) for performance tuning.
 
 ## Configuration
 

@@ -1,8 +1,10 @@
 # Ollama Integration Guide
 
+> **Integrating from an application?** See [integration_guide.md](integration_guide.md) for language-specific examples (Python, Node.js, OpenAI SDK, curl) and the Ollama Cloud FAQ.
+
 ## Overview
 
-This project uses Ollama as the model serving layer. Ollama handles model loading, quantization, and inference, while our code focuses on orchestration and optimization on top of it.
+This document covers the internal Ollama setup and the `OllamaClient` Python API used by the engine itself. Ollama handles model loading, quantization, and inference; the engine handles orchestration and optimization on top of it.
 
 ## Prerequisites
 
