@@ -97,3 +97,70 @@ class TestAdaptiveThrottler:
             await throttler.reserve(f"r{i}", 1.0)
         assert throttler.committed_gb == pytest.approx(5.0)
         assert throttler.stats.active_requests == 5
+
+    async def test_queue_decision_near_soft_limit(self) -> None:
+        """When committed exceeds soft limit, decision should be QUEUE."""
+        throttler = AdaptiveThrottler(memory_limit_gb=10.0, soft_limit_ratio=0.5)
+        # Soft limit is 5 GB; reserve 5 GB, then check a tiny request
+        await throttler.reserve("r1", 5.0)
+        decision = await throttler.check(0.1)
+        assert decision == AdmissionDecision.QUEUE
+
+    async def test_reject_decision_near_hard_limit(self) -> None:
+        """When request would exceed hard limit, decision should be REJECT."""
+        throttler = AdaptiveThrottler(memory_limit_gb=4.0, soft_limit_ratio=0.8)
+        # Reserve 3.5 GB; only 0.5 GB left; new request of 1.0 GB exceeds hard limit
+        await throttler.reserve("r1", 3.5)
+        decision = await throttler.check(1.0)
+        assert decision == AdmissionDecision.REJECT
+
+    async def test_reserve_and_release_symmetry(self) -> None:
+        """reserve then release should return committed_gb to its original value."""
+        throttler = AdaptiveThrottler(memory_limit_gb=16.0)
+        initial = throttler.committed_gb
+        await throttler.reserve("req1", 4.0)
+        await throttler.release("req1", 4.0)
+        assert throttler.committed_gb == pytest.approx(initial)
+
+    async def test_release_clamps_at_zero(self) -> None:
+        """Releasing more than committed should not go negative."""
+        throttler = AdaptiveThrottler(memory_limit_gb=16.0)
+        await throttler.reserve("req1", 1.0)
+        await throttler.release("req1", 10.0)  # release more than reserved
+        assert throttler.committed_gb >= 0.0
+
+    async def test_active_requests_decrements_on_release(self) -> None:
+        throttler = AdaptiveThrottler(memory_limit_gb=16.0)
+        await throttler.reserve("req1", 1.0)
+        await throttler.reserve("req2", 1.0)
+        await throttler.release("req1", 1.0)
+        assert throttler.stats.active_requests == 1
+
+    async def test_available_gb_decreases_after_reserve(self) -> None:
+        throttler = AdaptiveThrottler(memory_limit_gb=10.0)
+        before = throttler.stats.available_gb
+        await throttler.reserve("req1", 3.0)
+        after = throttler.stats.available_gb
+        assert after < before
+
+    async def test_check_accept_with_headroom(self) -> None:
+        """Fresh throttler should ACCEPT a small request."""
+        throttler = AdaptiveThrottler(memory_limit_gb=32.0, soft_limit_ratio=0.9)
+        decision = await throttler.check(1.0)
+        assert decision == AdmissionDecision.ACCEPT
+
+    async def test_concurrent_reserves_accumulate(self) -> None:
+        """Sequential reserves should accumulate correctly."""
+        throttler = AdaptiveThrottler(memory_limit_gb=20.0)
+        await throttler.reserve("a", 2.0)
+        await throttler.reserve("b", 3.0)
+        assert throttler.committed_gb == pytest.approx(5.0)
+        assert throttler.stats.active_requests == 2
+
+    async def test_soft_limit_reflected_in_stats(self) -> None:
+        throttler = AdaptiveThrottler(memory_limit_gb=10.0, soft_limit_ratio=0.7)
+        assert throttler.stats.soft_limit_gb == pytest.approx(7.0)
+
+    async def test_memory_limit_reflected_in_stats(self) -> None:
+        throttler = AdaptiveThrottler(memory_limit_gb=16.0)
+        assert throttler.stats.memory_limit_gb == pytest.approx(16.0)
