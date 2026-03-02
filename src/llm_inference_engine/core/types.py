@@ -6,7 +6,7 @@ from enum import Enum
 from typing import Any
 
 
-class RequestStatus(str, Enum):
+class RequestStatus(str, Enum):  # noqa: UP042
     """Status of an inference request."""
 
     PENDING = "pending"
