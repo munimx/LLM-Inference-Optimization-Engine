@@ -130,24 +130,18 @@ docs(api): document OpenAI-compatible endpoints
 
 ## Branching Workflow
 
-Branches are named `phase-N-<short-description>` and chain from the previous
-phase:
+All development happens on `main`. Create a feature branch if a change is
+large or experimental; otherwise commit directly to `main` with meaningful
+atomic commits.
 
 ```
-main
-  └── phase-1-ollama-integration
-        └── phase-2-quantization-analysis
-              └── phase-3-batching-scheduling
-                    └── phase-4-memory-capacity
-                          └── phase-5-api-layer
-                                └── phase-6-speculative-decoding
-                                      └── phase-7-production-hardening
+main ← all changes land here
+  └── feature/my-improvement  (optional, for larger work)
 ```
 
-- **Never push directly to `main`.**
-- Open a PR from your phase branch into the previous phase branch (or `main`
-  for the final merge).
-- Squash is allowed for WIP commits; keep meaningful atomic commits.
+- Keep commits atomic and well-described.
+- Open a PR for large changes or when you want review.
+- Squash is allowed for WIP commits.
 
 ---
 
