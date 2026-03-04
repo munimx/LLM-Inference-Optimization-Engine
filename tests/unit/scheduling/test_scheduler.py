@@ -1,5 +1,6 @@
 """Unit tests for scheduling policies and the Scheduler."""
 
+import time
 from typing import Any
 
 from llm_inference_engine.core.types import (
@@ -90,21 +91,23 @@ class TestFCFSPolicy:
 class TestSJFPolicy:
     def test_shortest_jobs_first(self) -> None:
         """SJF should process requests with fewer tokens first."""
+        now = time.time()
         policy = SJFPolicy()
         requests = [
-            _make_request("big", max_tokens=200),
-            _make_request("small", max_tokens=10),
-            _make_request("medium", max_tokens=100),
+            _make_request("big", max_tokens=200, timestamp=now),
+            _make_request("small", max_tokens=10, timestamp=now),
+            _make_request("medium", max_tokens=100, timestamp=now),
         ]
         batch = policy.form_batch(requests, "b1", MODEL, max_requests=10, max_tokens=0)
         assert [r.request_id for r in batch] == ["small", "medium", "big"]
 
     def test_skips_over_non_fitting(self) -> None:
         """SJF should skip jobs that don't fit while trying smaller ones."""
+        now = time.time()
         policy = SJFPolicy()
         requests = [
-            _make_request("big", max_tokens=90),
-            _make_request("small", max_tokens=20),
+            _make_request("big", max_tokens=90, timestamp=now),
+            _make_request("small", max_tokens=20, timestamp=now),
         ]
         # Budget=100: big alone fits, but together they don't.
         # SJF visits small first (20 tokens), then tries big (90 > 80 remaining) — skips.
@@ -112,6 +115,18 @@ class TestSJFPolicy:
         # small fits, big doesn't fit after small → big is skipped
         ids = [r.request_id for r in batch]
         assert "small" in ids
+
+    def test_starvation_guard_promotes_old_requests(self) -> None:
+        """Requests waiting longer than max_wait should be promoted."""
+        now = time.time()
+        policy = SJFPolicy(max_wait_seconds=10.0)
+        requests = [
+            _make_request("big", max_tokens=200, timestamp=now - 15),  # old
+            _make_request("small", max_tokens=10, timestamp=now),  # fresh
+        ]
+        batch = policy.form_batch(requests, "b1", MODEL, max_requests=10, max_tokens=0)
+        # big is promoted (waited >10s), goes before small
+        assert [r.request_id for r in batch] == ["big", "small"]
 
 
 class TestPriorityPolicy:
@@ -274,6 +289,7 @@ class TestScheduler:
 
     async def test_sjf_policy_wired_correctly(self) -> None:
         """Scheduler with SJF policy should process shortest jobs first."""
+        now = time.time()
         dispatched_order: list[str] = []
 
         async def recording_dispatch(batch: Batch) -> list[Response]:
@@ -286,8 +302,8 @@ class TestScheduler:
             policy=SchedulingPolicy.SJF,
             max_requests_per_batch=10,
         )
-        await scheduler.submit(_make_request("big", max_tokens=200))
-        await scheduler.submit(_make_request("small", max_tokens=10))
+        await scheduler.submit(_make_request("big", max_tokens=200, timestamp=now))
+        await scheduler.submit(_make_request("small", max_tokens=10, timestamp=now))
         await scheduler.drain(MODEL)
         assert dispatched_order[0] == "small"
 

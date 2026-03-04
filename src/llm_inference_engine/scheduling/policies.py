@@ -1,5 +1,6 @@
 """Scheduling policies that determine batch formation order."""
 
+import time
 from enum import Enum
 from typing import Protocol
 
@@ -87,12 +88,19 @@ class FCFSPolicy:
 
 
 class SJFPolicy:
-    """Shortest-Job-First batch formation.
+    """Shortest-Job-First batch formation with starvation guard.
 
     Sorts requests by ``generation_config.max_tokens`` ascending so that
     requests with smaller output budgets are processed first, reducing
     average waiting time.
+
+    Requests that have waited longer than ``max_wait_seconds`` are
+    promoted to the front of the batch (FIFO among promoted) to prevent
+    indefinite starvation of large jobs.
     """
+
+    def __init__(self, max_wait_seconds: float = 30.0) -> None:
+        self._max_wait = max_wait_seconds
 
     def form_batch(
         self,
@@ -102,8 +110,14 @@ class SJFPolicy:
         max_requests: int,
         max_tokens: int,
     ) -> Batch:
-        """Form a batch with shortest-job-first ordering."""
-        sorted_requests = sorted(requests, key=lambda r: r.generation_config.max_tokens)
+        """Form a batch with shortest-job-first ordering and aging."""
+        now = time.time()
+        promoted = [r for r in requests if now - r.timestamp >= self._max_wait]
+        normal = [r for r in requests if now - r.timestamp < self._max_wait]
+        # Promoted requests go first (FIFO), then SJF for the rest
+        promoted.sort(key=lambda r: r.timestamp)
+        normal.sort(key=lambda r: r.generation_config.max_tokens)
+        sorted_requests = promoted + normal
         batch = Batch(
             batch_id=batch_id,
             model=model,
@@ -114,7 +128,12 @@ class SJFPolicy:
             if not batch.can_add(request):
                 continue  # SJF skips over jobs that don't fit
             batch.add(request)
-        logger.debug("sjf_batch_formed", batch_id=batch_id, size=batch.size)
+        logger.debug(
+            "sjf_batch_formed",
+            batch_id=batch_id,
+            size=batch.size,
+            promoted=len(promoted),
+        )
         return batch
 
 
