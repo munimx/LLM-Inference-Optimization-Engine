@@ -1,67 +1,83 @@
-"""Case-insensitive response cache for inference requests.
+"""Redis-backed response cache for inference requests.
 
-Provides a response cache with TTL expiry and LRU eviction.  Keys are
-``(model, prompt)`` tuples — prompts are normalised via ``.lower().strip()``
-before lookup, so ``"Hello"`` and ``"  hello  "`` share the same cache entry.
+Provides a response cache with TTL expiry and LRU eviction backed by Redis.
+Keys are ``(model, prompt)`` tuples — prompts are normalised via
+``.lower().strip()`` before lookup.
+
+The cache is safe to use across multiple workers: all state lives in Redis.
+
+Usage::
+
+    async with RedisCache.connect("redis://localhost:6379/0", max_size=256) as cache:
+        hit = await cache.get("mistral-7b", "Hello!")
+        if hit is None:
+            result = await vllm_generate(...)
+            await cache.put("mistral-7b", "Hello!", result)
 """
 
-import asyncio
-import time
-from collections import OrderedDict
-from dataclasses import dataclass, field
+from __future__ import annotations
 
+import hashlib
+import time
+from typing import Any
+
+import redis.asyncio as aioredis
 import structlog
 
 logger = structlog.get_logger(__name__)
 
-
-@dataclass
-class _CacheEntry:
-    """Internal cache entry."""
-
-    response_text: str
-    created_at: float = field(default_factory=time.monotonic)
-    hits: int = 0
+# Redis key prefixes
+_CACHE_VALUE_PREFIX = "llm_cache:v:"
+_CACHE_LRU_ZSET = "llm_cache:lru"
 
 
-class ExactMatchCache:
-    """Response cache with case-insensitive key normalisation, TTL, and LRU eviction.
+def _cache_key(model: str, prompt: str) -> str:
+    """Build a Redis key from model and normalised prompt."""
+    normalised = f"{model}:{prompt.lower().strip()}"
+    digest = hashlib.sha256(normalised.encode()).hexdigest()
+    return f"{_CACHE_VALUE_PREFIX}{digest}"
 
-    The cache key is a ``(model, normalised_prompt)`` tuple where prompts are
-    normalised with ``.lower().strip()``.  Entries are evicted when they exceed
-    *ttl_seconds* or when the cache reaches *max_size* (LRU eviction).
 
-    All public methods are coroutine-safe: an internal :class:`asyncio.Lock`
-    serialises concurrent ``get``/``put`` operations to prevent race
-    conditions on the underlying :class:`~collections.OrderedDict`.
+class RedisCache:
+    """Response cache backed by Redis with LRU eviction and TTL.
 
-    Usage::
-
-        cache = ExactMatchCache(max_size=512, ttl_seconds=300)
-        hit = await cache.get("llama3.1:8b", "Hello!")
-        if hit is None:
-            result = await ollama_generate(...)
-            await cache.put("llama3.1:8b", "Hello!", result)
+    Args:
+        redis_client: An async Redis client (``redis.asyncio.Redis``).
+        max_size: Maximum number of entries before LRU eviction.
+        ttl_seconds: How long entries remain valid.
     """
 
-    def __init__(self, max_size: int = 256, ttl_seconds: float = 300.0) -> None:
-        """Initialise the cache.
-
-        Args:
-            max_size: Maximum number of entries (LRU eviction when full).
-            ttl_seconds: Seconds before an entry is considered stale.
-        """
+    def __init__(
+        self,
+        redis_client: Any,
+        max_size: int = 256,
+        ttl_seconds: float = 300.0,
+    ) -> None:
         if max_size <= 0:
             raise ValueError("max_size must be positive")
         if ttl_seconds <= 0:
             raise ValueError("ttl_seconds must be positive")
+        self._redis = redis_client
         self._max_size = max_size
-        self._ttl = ttl_seconds
-        self._store: OrderedDict[tuple[str, str], _CacheEntry] = OrderedDict()
+        self._ttl = int(ttl_seconds)
         self._hits = 0
         self._misses = 0
-        self._lock = asyncio.Lock()
-        logger.info("exact_match_cache_initialized", max_size=max_size, ttl_seconds=ttl_seconds)
+        logger.info("redis_cache_initialized", max_size=max_size, ttl_seconds=ttl_seconds)
+
+    @classmethod
+    async def connect(
+        cls,
+        redis_url: str,
+        max_size: int = 256,
+        ttl_seconds: float = 300.0,
+    ) -> "RedisCache":
+        """Create a RedisCache connected to *redis_url*."""
+        client = await aioredis.from_url(redis_url, decode_responses=True)
+        return cls(client, max_size=max_size, ttl_seconds=ttl_seconds)
+
+    async def close(self) -> None:
+        """Close the Redis connection."""
+        await self._redis.aclose()
 
     # ------------------------------------------------------------------
     # Public API
@@ -71,79 +87,60 @@ class ExactMatchCache:
         """Look up a cached response.
 
         Args:
-            model: Model tag.
-            prompt: Exact prompt string (normalised internally).
+            model: Model identifier.
+            prompt: Prompt string (normalised internally).
 
         Returns:
             Cached response text, or ``None`` on a miss.
         """
-        async with self._lock:
-            key = (model, prompt.lower().strip())
-            entry = self._store.get(key)
-            if entry is None:
-                self._misses += 1
-                return None
+        key = _cache_key(model, prompt)
+        value: str | None = await self._redis.get(key)
+        if value is None:
+            self._misses += 1
+            return None
 
-            # Check TTL expiry.
-            if time.monotonic() - entry.created_at > self._ttl:
-                del self._store[key]
-                self._misses += 1
-                logger.debug("cache_entry_expired", model=model)
-                return None
-
-            # Move to end (most-recently used).
-            self._store.move_to_end(key)
-            entry.hits += 1
-            self._hits += 1
-            logger.debug("cache_hit", model=model, total_hits=self._hits)
-            return entry.response_text
+        # Refresh LRU score on hit (sorted set score = current timestamp)
+        await self._redis.zadd(_CACHE_LRU_ZSET, {key: time.time()})
+        self._hits += 1
+        logger.debug("cache_hit", model=model, total_hits=self._hits)
+        return value
 
     async def put(self, model: str, prompt: str, response_text: str) -> None:
-        """Store a response in the cache.
-
-        If the cache is full the least-recently-used entry is evicted.
+        """Store a response in the cache, evicting LRU entries if at capacity.
 
         Args:
-            model: Model tag.
-            prompt: Exact prompt string (normalised internally).
+            model: Model identifier.
+            prompt: Prompt string (normalised internally).
             response_text: Generated text to cache.
         """
-        async with self._lock:
-            key = (model, prompt.lower().strip())
-            if key in self._store:
-                self._store.move_to_end(key)
-                self._store[key].response_text = response_text
-                self._store[key].created_at = time.monotonic()
-                return
+        key = _cache_key(model, prompt)
+        score = time.time()
 
-            if len(self._store) >= self._max_size:
-                evicted_key, _ = self._store.popitem(last=False)
-                logger.debug("cache_lru_eviction", evicted_model=evicted_key[0])
+        async with self._redis.pipeline(transaction=True) as pipe:
+            pipe.set(key, response_text, ex=self._ttl)
+            pipe.zadd(_CACHE_LRU_ZSET, {key: score})
+            await pipe.execute()
 
-            self._store[key] = _CacheEntry(response_text=response_text)
-            logger.debug("cache_put", model=model, cache_size=len(self._store))
+        await self._evict_if_needed()
+        logger.debug("cache_put", model=model)
 
     async def invalidate(self, model: str, prompt: str) -> bool:
-        """Remove a specific entry from the cache.
-
-        Args:
-            model: Model tag.
-            prompt: Exact prompt string (normalised internally).
+        """Remove a specific entry.
 
         Returns:
-            ``True`` if an entry was removed, ``False`` if not found.
+            ``True`` if an entry was removed, ``False`` otherwise.
         """
-        async with self._lock:
-            key = (model, prompt.lower().strip())
-            if key in self._store:
-                del self._store[key]
-                return True
-            return False
+        key = _cache_key(model, prompt)
+        removed = await self._redis.delete(key)
+        await self._redis.zrem(_CACHE_LRU_ZSET, key)
+        return bool(removed)
 
     async def clear(self) -> None:
-        """Remove all entries from the cache."""
-        async with self._lock:
-            self._store.clear()
+        """Remove all cache entries tracked in the LRU set."""
+        keys: list[str] = await self._redis.zrange(_CACHE_LRU_ZSET, 0, -1)
+        if keys:
+            await self._redis.delete(*keys)
+        await self._redis.delete(_CACHE_LRU_ZSET)
         logger.info("cache_cleared")
 
     # ------------------------------------------------------------------
@@ -152,26 +149,42 @@ class ExactMatchCache:
 
     @property
     def hits(self) -> int:
-        """Total cache hits since creation."""
+        """Total cache hits since creation (in-process counter)."""
         return self._hits
 
     @property
     def misses(self) -> int:
-        """Total cache misses since creation."""
+        """Total cache misses since creation (in-process counter)."""
         return self._misses
 
     @property
-    def size(self) -> int:
-        """Current number of entries in the cache."""
-        return len(self._store)
+    async def size(self) -> int:
+        """Current number of entries tracked in the LRU sorted set."""
+        return await self._redis.zcard(_CACHE_LRU_ZSET)
 
-    @property
-    def max_size(self) -> int:
-        """Maximum cache capacity."""
-        return self._max_size
+    # ------------------------------------------------------------------
+    # Internal helpers
+    # ------------------------------------------------------------------
+
+    async def _evict_if_needed(self) -> None:
+        """Evict least-recently-used entries when the cache exceeds max_size."""
+        count: int = await self._redis.zcard(_CACHE_LRU_ZSET)
+        if count <= self._max_size:
+            return
+        overflow = count - self._max_size
+        # Oldest entries have the lowest scores
+        lru_keys: list[str] = await self._redis.zrange(
+            _CACHE_LRU_ZSET, 0, overflow - 1
+        )
+        if lru_keys:
+            await self._redis.delete(*lru_keys)
+            await self._redis.zrem(_CACHE_LRU_ZSET, *lru_keys)
+            logger.debug("cache_lru_eviction", evicted=len(lru_keys))
 
 
-# Backward-compatible alias
-SemanticCache = ExactMatchCache
+# Backward-compatible alias used in server.py
+ExactMatchCache = RedisCache
+SemanticCache = RedisCache
 
-__all__ = ["ExactMatchCache", "SemanticCache"]
+__all__ = ["RedisCache", "ExactMatchCache", "SemanticCache"]
+

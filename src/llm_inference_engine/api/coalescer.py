@@ -1,15 +1,27 @@
-"""In-flight request coalescing.
+"""Cross-worker in-flight request coalescing via Redis.
 
-When multiple callers submit identical ``(model, prompt)`` requests
-concurrently, only one is actually dispatched to the inference backend.  All
-other callers await the same result — saving GPU time and reducing queue
-depth.
+When multiple workers receive identical ``(model, prompt)`` requests
+concurrently, only the first worker executes the inference.  All others
+subscribe to a Redis pub/sub channel and receive the result when it is
+published.
+
+This extends the single-process coalescing concept to work across multiple
+uvicorn workers or container replicas.
+
+Usage::
+
+    coalescer = RedisCoalescer(redis_client)
+
+    async def handle(model, prompt, do_inference):
+        result = await coalescer.coalesce(model, prompt, do_inference)
+        return result
 """
 
 from __future__ import annotations
 
 import asyncio
 import hashlib
+import json
 from collections.abc import Awaitable, Callable
 from typing import Any
 
@@ -17,22 +29,32 @@ import structlog
 
 logger = structlog.get_logger(__name__)
 
+# How long the winner's lock key stays in Redis (seconds).
+# Requests that take longer than this will fall through to direct execution.
+_LOCK_TTL_MS = 30_000  # 30 seconds in milliseconds
+
+# How long waiters listen on the pub/sub channel before giving up and
+# executing the inference themselves.
+_WAIT_TIMEOUT_SECONDS = 25.0
+
+# Redis key prefixes
+_LOCK_PREFIX = "llm_coalesce:lock:"
+_RESULT_CHANNEL_PREFIX = "llm_coalesce:result:"
+
+
+def _request_hash(model: str, prompt: str) -> str:
+    return hashlib.sha256(f"{model}:{prompt}".encode()).hexdigest()
+
 
 class RequestCoalescer:
-    """Deduplicates in-flight inference requests.
+    """Deduplicates in-flight inference requests using Redis pub/sub.
 
-    Usage::
-
-        coalescer = RequestCoalescer()
-
-        async def handle(model, prompt, do_inference):
-            result = await coalescer.coalesce(model, prompt, do_inference)
-            return result
+    Args:
+        redis_client: An async Redis client (``redis.asyncio.Redis``).
     """
 
-    def __init__(self) -> None:
-        self._lock = asyncio.Lock()
-        self._in_flight: dict[str, asyncio.Future[Any]] = {}
+    def __init__(self, redis_client: Any) -> None:
+        self._redis = redis_client
         self._coalesced_count = 0
 
     async def coalesce(
@@ -43,64 +65,96 @@ class RequestCoalescer:
     ) -> Any:
         """Return the result of *producer*, deduplicating identical requests.
 
-        If another coroutine is already awaiting a result for the same
-        ``(model, prompt)`` pair, this call piggy-backs on that future
-        instead of invoking *producer* again.
+        If another worker is already executing an identical request, this
+        method subscribes to its result channel and returns that result.
+        Falls back to executing *producer* directly if the wait times out.
 
         Args:
             model: Model name.
-            prompt: Prompt text (used to compute the dedup key).
-            producer: Zero-arg async callable that performs the actual
-                inference and returns the result.
+            prompt: Prompt text.
+            producer: Zero-arg async callable that performs the inference.
 
         Returns:
             Whatever *producer* returns.
         """
-        key = self._make_key(model, prompt)
+        req_hash = _request_hash(model, prompt)
+        lock_key = f"{_LOCK_PREFIX}{req_hash}"
+        channel = f"{_RESULT_CHANNEL_PREFIX}{req_hash}"
 
-        async with self._lock:
-            if key in self._in_flight:
-                self._coalesced_count += 1
-                logger.debug("request_coalesced", model=model)
-                future = self._in_flight[key]
-            else:
-                future = asyncio.get_event_loop().create_future()
-                self._in_flight[key] = future
-                # We're the "owner" — release the lock and run the producer
-                asyncio.ensure_future(self._run(key, producer, future))
+        # Attempt to claim ownership with SET NX PX (atomic)
+        claimed = await self._redis.set(lock_key, "1", nx=True, px=_LOCK_TTL_MS)
 
-        return await future
+        if claimed:
+            return await self._execute_and_publish(producer, lock_key, channel)
 
-    async def _run(
+        # Another worker owns this request — wait for the result
+        logger.debug("request_coalesced_waiting", model=model)
+        result = await self._wait_for_result(channel)
+        if result is not None:
+            self._coalesced_count += 1
+            return result
+
+        # Timed out waiting — fall back to executing directly
+        logger.debug("coalesce_wait_timeout_fallback", model=model)
+        return await producer()
+
+    async def _execute_and_publish(
         self,
-        key: str,
         producer: Callable[[], Awaitable[Any]],
-        future: asyncio.Future[Any],
-    ) -> None:
-        """Execute *producer* and resolve the shared future."""
+        lock_key: str,
+        channel: str,
+    ) -> Any:
+        """Execute *producer* and publish the serialised result to *channel*."""
         try:
             result = await producer()
-            future.set_result(result)
+            payload = json.dumps(result) if not isinstance(result, str) else result
+            await self._redis.publish(channel, payload)
+            return result
         except Exception as exc:
-            future.set_exception(exc)
+            # Publish an error sentinel so waiters don't hang
+            await self._redis.publish(channel, json.dumps({"__error__": str(exc)}))
+            raise
         finally:
-            async with self._lock:
-                self._in_flight.pop(key, None)
+            await self._redis.delete(lock_key)
+
+    async def _wait_for_result(self, channel: str) -> Any | None:
+        """Subscribe to *channel* and return the first message received.
+
+        Returns ``None`` on timeout.
+        """
+        pubsub = self._redis.pubsub()
+        try:
+            await pubsub.subscribe(channel)
+            deadline = asyncio.get_event_loop().time() + _WAIT_TIMEOUT_SECONDS
+            while True:
+                remaining = deadline - asyncio.get_event_loop().time()
+                if remaining <= 0:
+                    return None
+                message = await asyncio.wait_for(
+                    pubsub.get_message(ignore_subscribe_messages=True, timeout=remaining),
+                    timeout=remaining + 0.1,
+                )
+                if message is None:
+                    await asyncio.sleep(0.01)
+                    continue
+                raw = message.get("data", "")
+                try:
+                    parsed = json.loads(raw)
+                    if isinstance(parsed, dict) and "__error__" in parsed:
+                        raise RuntimeError(parsed["__error__"])
+                    return parsed
+                except (json.JSONDecodeError, TypeError):
+                    return raw
+        except TimeoutError:
+            return None
+        finally:
+            await pubsub.unsubscribe(channel)
+            await pubsub.close()
 
     @property
     def coalesced_count(self) -> int:
-        """Number of requests that were deduplicated."""
+        """Number of requests that were deduplicated (in-process counter)."""
         return self._coalesced_count
-
-    @property
-    def in_flight_count(self) -> int:
-        """Number of currently in-flight unique requests."""
-        return len(self._in_flight)
-
-    @staticmethod
-    def _make_key(model: str, prompt: str) -> str:
-        h = hashlib.sha256(f"{model}:{prompt}".encode()).hexdigest()
-        return h
 
 
 __all__ = ["RequestCoalescer"]
