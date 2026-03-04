@@ -160,7 +160,7 @@ class RedisCache:
     @property
     async def size(self) -> int:
         """Current number of entries tracked in the LRU sorted set."""
-        return await self._redis.zcard(_CACHE_LRU_ZSET)
+        return int(await self._redis.zcard(_CACHE_LRU_ZSET))
 
     # ------------------------------------------------------------------
     # Internal helpers
