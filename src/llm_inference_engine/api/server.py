@@ -23,7 +23,6 @@ from fastapi.middleware.cors import CORSMiddleware
 from fastapi.responses import StreamingResponse
 
 from llm_inference_engine.api.cache import RedisCache
-from llm_inference_engine.api.circuit_breaker import CircuitBreaker
 from llm_inference_engine.api.coalescer import RequestCoalescer
 from llm_inference_engine.api.dependencies import PoolDep, ThrottlerDep
 from llm_inference_engine.api.fallback_router import FallbackRouter

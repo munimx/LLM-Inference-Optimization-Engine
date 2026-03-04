@@ -65,7 +65,7 @@ class BackendPool:
         retry_backoff_seconds: float = 0.5,
         failure_threshold: int = 5,
         cooldown_seconds: float = 30.0,
-    ) -> "BackendPool":
+    ) -> BackendPool:
         """Construct a pool from a list of vLLM base URLs."""
         backends = [
             VLLMBackend(
@@ -114,7 +114,7 @@ class BackendPool:
         return sum(1 for b in self._breakers if b.is_available)
 
     def _breaker_for(self, backend: VLLMBackend) -> CircuitBreaker | None:
-        for b, cb in zip(self._backends, self._breakers):
+        for b, cb in zip(self._backends, self._breakers, strict=False):
             if b is backend:
                 return cb
         return None

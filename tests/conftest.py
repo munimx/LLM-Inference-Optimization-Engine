@@ -4,7 +4,7 @@ from pathlib import Path
 
 import pytest
 
-from llm_inference_engine.config import InferenceConfig, VLLMConfig, VLLMInstanceConfig
+from llm_inference_engine.config import InferenceConfig
 
 
 @pytest.fixture

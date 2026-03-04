@@ -70,7 +70,7 @@ class RedisCache:
         redis_url: str,
         max_size: int = 256,
         ttl_seconds: float = 300.0,
-    ) -> "RedisCache":
+    ) -> RedisCache:
         """Create a RedisCache connected to *redis_url*."""
         client = await aioredis.from_url(redis_url, decode_responses=True)
         return cls(client, max_size=max_size, ttl_seconds=ttl_seconds)
