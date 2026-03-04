@@ -1,8 +1,21 @@
 # LLM Inference Optimization Engine
 
-OpenAI-compatible inference middleware for [vLLM](https://github.com/vllm-project/vllm).
+> **⚠️ DEPRECATED** — This project is archived and no longer maintained.
+> Development has moved to **[munimx/llm-semantic-cache](https://github.com/munimx/llm-semantic-cache)**.
 
-Sits between your application and one or more vLLM instances. Each request flows through Redis-backed response caching, cross-worker request coalescing, token-count-based model routing, and KV-cache-pressure-aware admission control before being dispatched to the backend pool.
+---
+
+## What This Was
+
+An OpenAI-compatible proxy middleware for [vLLM](https://github.com/vllm-project/vllm). It sat between an application and one or more vLLM instances, adding Redis-backed response caching, cross-worker request coalescing, token-count-based model routing, and KV-cache-pressure-aware admission control.
+
+## Why It Was Retired
+
+This project went through two iterations. The first was Ollama middleware — a foundation that turned out to be wrong. The second (this repo) was a vLLM proxy, which was cleaner but ultimately a worse version of [LiteLLM](https://github.com/BerriAI/litellm). LiteLLM already exists, is production-grade, has enterprise backing, and covers every feature here plus hundreds more. There is no credible answer to "why not just use LiteLLM?" for a generic proxy layer.
+
+## Where Development Continues
+
+**[munimx/llm-semantic-cache](https://github.com/munimx/llm-semantic-cache)** — a focused Python library that adds semantic caching in front of any OpenAI-compatible LLM API. One thing done well: understand whether two prompts are asking the same thing, and skip the redundant LLM call if they are.
 
 ## Quick Start
 
