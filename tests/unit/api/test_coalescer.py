@@ -1,7 +1,7 @@
 """Unit tests for RequestCoalescer using fakeredis."""
 
-import pytest
 import fakeredis.aioredis
+import pytest
 
 from llm_inference_engine.api.coalescer import RequestCoalescer
 

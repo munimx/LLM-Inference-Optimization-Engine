@@ -1,8 +1,8 @@
 """Unit tests for VLLMBackend using respx to mock httpx."""
 
+import httpx
 import pytest
 import respx
-import httpx
 
 from llm_inference_engine.integration.backend import BackendResult
 from llm_inference_engine.integration.vllm_backend import VLLMBackend

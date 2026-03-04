@@ -1,7 +1,7 @@
 """Unit tests for RedisCache."""
 
-import pytest
 import fakeredis.aioredis
+import pytest
 
 from llm_inference_engine.api.cache import RedisCache
 

@@ -2,8 +2,6 @@
 
 import time
 
-import pytest
-
 from llm_inference_engine.api.circuit_breaker import CircuitBreaker, CircuitState
 
 

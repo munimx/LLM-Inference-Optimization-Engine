@@ -7,7 +7,6 @@ import pytest
 from llm_inference_engine.config import (
     AdmissionControlConfig,
     CacheConfig,
-    CircuitBreakerConfig,
     InferenceConfig,
     ModelRegistryConfig,
     RedisConfig,
