@@ -114,6 +114,11 @@ Response` objects (one per request in the batch).
         This is a *non-blocking* operation: if the queue is empty, an
         empty list is returned immediately.
 
+        Requests that are collected but excluded by the batch formation
+        policy (e.g. token budget overflow) are re-enqueued so they are
+        not silently lost.  If dispatch raises, batch requests are marked
+        :attr:`~RequestStatus.FAILED` and the exception propagates.
+
         Args:
             model: The Ollama model tag whose queue should be drained.
 
@@ -131,6 +136,19 @@ Response` objects (one per request in the batch).
             return []
 
         batch = self._form_batch(requests, model)
+
+        # Re-enqueue requests excluded by batch formation policy
+        batched_ids = {r.request_id for r in batch}
+        overflow = [r for r in requests if r.request_id not in batched_ids]
+        for req in overflow:
+            await queue.enqueue(req)
+        if overflow:
+            logger.debug(
+                "requests_re_enqueued",
+                model=model,
+                count=len(overflow),
+            )
+
         if batch.is_empty:
             return []
 
@@ -145,7 +163,18 @@ Response` objects (one per request in the batch).
             total_tokens=batch.total_tokens,
         )
 
-        responses = await self._dispatch_fn(batch)
+        try:
+            responses = await self._dispatch_fn(batch)
+        except Exception:
+            for req in batch:
+                req.status = RequestStatus.FAILED
+            logger.error(
+                "batch_dispatch_failed",
+                batch_id=batch.batch_id,
+                model=model,
+                batch_size=batch.size,
+            )
+            raise
 
         for req in batch:
             req.status = RequestStatus.COMPLETED
