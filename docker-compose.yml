@@ -1,43 +1,61 @@
 services:
-  ollama:
-    image: ollama/ollama:latest
+  redis:
+    image: redis:7-alpine
     ports:
-      - "11434:11434"
-    volumes:
-      - ollama_data:/root/.ollama
+      - "6379:6379"
     healthcheck:
-      test: ["CMD", "curl", "-f", "http://localhost:11434/"]
-      interval: 10s
-      timeout: 5s
+      test: ["CMD", "redis-cli", "ping"]
+      interval: 5s
+      timeout: 3s
       retries: 5
+    restart: unless-stopped
+
+  # vLLM instance — replace MODEL_NAME with your actual model (e.g. "mistralai/Mistral-7B-Instruct-v0.2").
+  # Requires a GPU-enabled host. Comment out this section if running vLLM separately.
+  vllm:
+    image: vllm/vllm-openai:latest
+    ports:
+      - "8080:8000"
+    environment:
+      - HUGGING_FACE_HUB_TOKEN=${HF_TOKEN:-}
+    command: ["--model", "${VLLM_MODEL:-mistralai/Mistral-7B-Instruct-v0.2}", "--port", "8000"]
     deploy:
       resources:
-        limits:
-          memory: 16g
+        reservations:
+          devices:
+            - driver: nvidia
+              count: 1
+              capabilities: [gpu]
+    healthcheck:
+      test: ["CMD", "curl", "-f", "http://localhost:8000/health/ready"]
+      interval: 15s
+      timeout: 5s
+      retries: 10
+      start_period: 60s
+    restart: unless-stopped
 
   engine:
     build: .
     ports:
       - "8000:8000"
     environment:
-      - OLLAMA_HOST=ollama
-      - OLLAMA_PORT=11434
+      - VLLM_URL=http://vllm:8000
+      - REDIS_URL=redis://redis:6379/0
     volumes:
       - ./configs:/app/configs:ro
     depends_on:
-      ollama:
+      redis:
+        condition: service_healthy
+      vllm:
         condition: service_healthy
     healthcheck:
       test: ["CMD", "curl", "-f", "http://localhost:8000/health"]
       interval: 10s
       timeout: 5s
       retries: 3
-      start_period: 10s
+      start_period: 15s
     deploy:
       resources:
         limits:
-          memory: 1g
+          memory: 512m
     restart: unless-stopped
-
-volumes:
-  ollama_data:
