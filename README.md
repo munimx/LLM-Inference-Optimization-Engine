@@ -1,168 +1,161 @@
 # LLM Inference Optimization Engine
 
-Request scheduling, caching, streaming, and inference orchestration middleware for [Ollama](https://ollama.ai/) (with an extensible multi-backend interface), exposing an OpenAI-compatible HTTP API.
+Request scheduling, caching, streaming, and inference orchestration middleware for [Ollama](https://ollama.com).
 
-[![CI](https://github.com/munimx/LLM-Inference-Optimization-Engine/actions/workflows/ci.yml/badge.svg)](https://github.com/munimx/LLM-Inference-Optimization-Engine/actions/workflows/ci.yml)
-[![Python 3.11+](https://img.shields.io/badge/python-3.11%2B-blue)](https://www.python.org/downloads/)
-[![License: Apache 2.0](https://img.shields.io/badge/license-Apache%202.0-green)](LICENSE)
+Sits between your application and Ollama. Incoming requests are checked against a case-insensitive response cache, queued by a configurable scheduling policy, dispatched to the backend, and streamed back via SSE or returned as a complete JSON response.
 
----
+## Quick Start
 
-Sits between your application and Ollama (or other inference backends). Incoming requests are checked against a case-insensitive (`.lower().strip()`) response cache, queued by configurable scheduling policy, dispatched to the backend in concurrent batches, and streamed back via SSE or returned as a complete response. Features include API-key authentication, Prometheus metrics, request coalescing, and adaptive memory throttling.
+```bash
+# Prerequisites: Python 3.11+, Ollama running on localhost:11434
+pip install -e .
+uvicorn llm_inference_engine.api.server:app --host 0.0.0.0 --port 8000
+```
+
+```bash
+# Text completion
+curl http://localhost:8000/completions \
+  -H "Content-Type: application/json" \
+  -d '{"model": "llama3.1:8b", "prompt": "Explain quicksort", "max_tokens": 128}'
+
+# Streaming
+curl http://localhost:8000/completions \
+  -H "Content-Type: application/json" \
+  -d '{"model": "llama3.1:8b", "prompt": "Explain quicksort", "max_tokens": 128, "stream": true}'
+```
 
 ## Architecture
 
 ```
-POST /completions or /chat/completions
-       │
-       ▼
-  API-Key Auth (optional)
-       │
-       ▼
-RequestCoalescer ── dedup identical in-flight requests
-       │
-       ▼
-ExactMatchCache / EmbeddingCache ── hit ─────────────▶ response
-       │ miss
-       ▼
-RequestAggregator
-       │
-       ▼
-Scheduler  (per-model RequestQueue + SchedulingPolicy)
-       │
-       ▼
-dispatch_batch()  ── concurrent httpx ──▶  Ollama / InferenceBackend
-       │
-       ▼
-ResultMapper  (asyncio.Future per request)
-       │
-       ▼
-CompletionResponse or SSE stream
+┌─────────────┐     ┌─────────────────────────────────────────────┐     ┌────────┐
+│ Application │────▶│  LLM Inference Optimization Engine          │────▶│ Ollama │
+│             │◀────│  Cache → Throttler → Scheduler → Dispatch   │◀────│        │
+└─────────────┘     └─────────────────────────────────────────────┘     └────────┘
 ```
 
-See [docs/architecture.md](docs/architecture.md) for component details.
+| Layer | Components | Purpose |
+|-------|-----------|---------|
+| **API** | FastAPI server, Pydantic models | OpenAI-compatible HTTP endpoints |
+| **Cache** | ExactMatchCache, EmbeddingCache | Case-insensitive response caching with TTL + LRU |
+| **Scheduling** | Scheduler, Policies, RequestQueue | Per-model queuing with FCFS/SJF/Priority/TokenBudget |
+| **Optimization** | AdaptiveThrottler, MemoryEstimator | Memory-aware admission control |
+| **Reliability** | CircuitBreaker, Coalescer | Failure isolation and request deduplication |
+| **Integration** | OllamaClient, InferenceBackend ABC | Async Ollama communication with retry + backoff |
 
-## Documentation
+See [docs/architecture.md](docs/architecture.md) for component details and request lifecycle.
 
-| Doc | What it covers |
-|-----|----------------|
-| [integration_guide.md](docs/integration_guide.md) | How to connect your app to the engine (Python, Node.js, OpenAI SDK, Ollama Cloud FAQ) |
-| [usage_guide.md](docs/usage_guide.md) | When the engine helps vs hurts, config tuning, per-model characteristics |
-| [PERFORMANCE_REPORT.md](docs/PERFORMANCE_REPORT.md) | Measured benchmark results across all 4 local models |
-| [architecture.md](docs/architecture.md) | Component design and data flow |
+## Features
 
-## Setup
+- **OpenAI-compatible API** — `/completions` and `/chat/completions` with the same request/response format
+- **SSE streaming** — real-time token-by-token delivery with `stream: true`
+- **Response caching** — case-insensitive key normalisation, parameter-aware keys include `max_tokens` and `temperature`
+- **Request coalescing** — identical in-flight requests share one backend call
+- **4 scheduling policies** — FCFS, SJF (with starvation guard), Priority, Token Budget
+- **Circuit breaker** — closed → open → half-open pattern isolates backend failures
+- **Memory throttling** — ACCEPT / QUEUE / REJECT admission based on estimated memory pressure
+- **API key authentication** — optional Bearer token validation
+- **Prometheus metrics** — request latency, token throughput, cache hit rate at `/metrics/prometheus`
+- **Docker support** — multi-stage build with docker-compose for Ollama + engine
 
-```bash
-# Requires Ollama running locally (https://ollama.ai)
-ollama pull llama3.1:8b
+## API Endpoints
 
-pip install -e ".[dev]"
+| Method | Path | Description |
+|--------|------|-------------|
+| `GET` | `/health` | Liveness check — Ollama connectivity, circuit breaker state, queue depth |
+| `GET` | `/metrics` | JSON metrics snapshot — cache stats, request counts, memory usage |
+| `GET` | `/metrics/prometheus` | Prometheus-format metrics for scraping |
+| `POST` | `/completions` | Text completion (streaming or non-streaming) |
+| `POST` | `/chat/completions` | Chat completion with message history (streaming or non-streaming) |
 
-python scripts/start_server.py
-```
-
-### Docker
-
-```bash
-docker compose up        # starts Ollama + engine
-# Engine at http://localhost:8000, Ollama at http://localhost:11434
-```
-
-## Usage
-
-```bash
-curl -s http://localhost:8000/completions \
-  -H "Content-Type: application/json" \
-  -d '{"model": "llama3.1:8b", "prompt": "Explain KV-cache in one sentence."}' \
-  | python -m json.tool
-```
-
-Interactive API docs: <http://localhost:8000/docs>
-
-Send the same prompt twice — the second call returns in **~2ms** (cache hit, Ollama not contacted).
-
-See [docs/integration_guide.md](docs/integration_guide.md) to connect your existing app. See [docs/usage_guide.md](docs/usage_guide.md) for performance tuning.
+See [docs/integration_guide.md](docs/integration_guide.md) for full API reference with request/response schemas.
 
 ## Configuration
 
-All settings are in `configs/default.yaml`. The key knobs:
+The engine reads `configs/default.yaml` and supports env var overrides (`OLLAMA_HOST`, `OLLAMA_PORT`).
 
-| Key | Default | Notes |
-|---|---|---|
-| `ollama.host` | `localhost` | Overridable via `OLLAMA_HOST` env var |
-| `ollama.port` | `11434` | Overridable via `OLLAMA_PORT` env var |
+```yaml
+ollama:
+  host: localhost
+  port: 11434
+  timeout_seconds: 300
+  retry_count: 3
 
-| Key | Default | Notes |
-|---|---|---|
-| `scheduling.policy` | `fcfs` | `fcfs` · `sjf` · `priority` · `token_budget` |
-| `scheduling.max_requests_per_batch` | `8` | Requests dispatched per drain cycle |
-| `scheduling.max_queue_depth` | `0` | Max pending requests (0=unlimited); rejects 429 when full |
-| `scheduling.circuit_breaker_threshold` | `5` | Consecutive failures before circuit opens |
-| `scheduling.circuit_breaker_cooldown_seconds` | `30` | Seconds before circuit half-opens |
-| `cache.max_size` | `256` | LRU capacity (entries) |
-| `cache.ttl_seconds` | `300` | Seconds before a cache entry is treated as a miss |
-| `cache.mode` | `exact` | `exact` or `semantic` (semantic uses Ollama embeddings) |
-| `memory.limit_gb` | `14.0` | Hard admission reject threshold (M2 Air default) |
-| `auth.enabled` | `false` | Enable API-key authentication |
-| `auth.api_keys` | `[]` | List of valid Bearer tokens |
-| `ollama.retry_count` | `3` | Retries on Ollama transport errors |
-| `ollama.retry_backoff_seconds` | `1.0` | Base for exponential + jitter backoff |
+server:
+  host: "0.0.0.0"
+  port: 8000
+  workers: 4
+  log_level: INFO
 
-## Key Features
+cache:
+  enabled: true
+  max_size: 256         # LRU entries
+  ttl_seconds: 300      # 5-minute TTL
+  mode: exact           # exact | semantic
 
-- **SSE Streaming** — `"stream": true` proxies Ollama's token-by-token output via Server-Sent Events, with cache integration and Prometheus instrumentation
-- **Chat completions** — `/chat/completions` uses Ollama's native `/api/chat` with structured messages
-- **Exact-match cache** — LRU cache keyed on `(model, key_string)` where the key string is built by the aggregator as `prompt\x00mt=<max_tokens>\x00t=<temperature>` with case-insensitive and leading/trailing whitespace normalisation. Streaming responses also cached.
-- **Semantic cache** — embedding-based similarity matching via Ollama's `/api/embed` (opt-in via `cache.mode: "semantic"`)
-- **Memory-based admission control** — adaptive throttler rejects requests with HTTP 503 when estimated memory pressure exceeds configured limit
-- **Request coalescing** — identical in-flight chat requests are deduplicated
-- **Circuit breaker** — opens after N consecutive Ollama failures, auto-recovers after cooldown
-- **Queue limits** — configurable `max_queue_depth` with HTTP 429 backpressure
-- **Per-request timeout** — optional `timeout_seconds` on each request (returns 504 on expiry)
-- **API-key auth** — optional Bearer-token authentication middleware
-- **Prometheus metrics** — scrapable at `GET /metrics/prometheus`, includes streaming latency and token counts
-- **Multi-backend interface** — abstract `InferenceBackend` ABC; Ollama adapter included, extensible to vLLM/TGI/llama.cpp
-- **Docker deployment** — `docker compose up` with Ollama + engine in one command; non-root container with healthcheck
-- **Env var config overrides** — `OLLAMA_HOST` and `OLLAMA_PORT` env vars override YAML config (useful for Docker/K8s)
-- **Prompt token counting** — uses Ollama's `prompt_eval_count` with char/4 fallback
+scheduling:
+  policy: fcfs           # fcfs | sjf | priority | token_budget
+  max_requests_per_batch: 8
+  max_tokens_per_batch: 0  # 0 = unlimited
+  drain_delay_seconds: 0.05
 
-## Development
+memory:
+  limit_gb: 14.0        # hard memory cap
+  safety_margin: 1.1    # +10% over estimates
+```
+
+See [docs/usage_guide.md](docs/usage_guide.md) for tuning recommendations.
+
+## Docker
 
 ```bash
-# Tests (no Ollama required, ~2 s, 580+ tests)
-pytest tests/unit/ --no-cov
-
-# Coverage report
-pytest tests/unit/ --cov=src/llm_inference_engine --cov-report=term-missing
-
-# Lint
-ruff check src/ tests/
-
-# Type check
-mypy src/llm_inference_engine --strict
-
-# Quantization benchmarks (requires Ollama)
-python scripts/run_benchmarks.py --config configs/benchmarks.yaml
+docker compose up --build
+# Engine on :8000, Ollama on :11434
 ```
+
+The compose file runs Ollama with a health check and starts the engine once Ollama is ready. Config is mounted read-only from `./configs/`.
+
+## Performance
+
+Benchmarked on Apple M2 Air (16 GB) with 4 local Ollama models:
+
+| Scenario | Result |
+|----------|--------|
+| Cache hit latency | 1.6–2.8 ms |
+| Streaming TTFT | 261–1549 ms (model-dependent) |
+| Concurrent burst (4 parallel) | 1.15–1.17× vs sequential |
+| Mixed workload (60% cache hit) | 2.15× throughput improvement |
+| Sequential cached throughput | 415–426 req/s |
+
+See [docs/PERFORMANCE_REPORT.md](docs/PERFORMANCE_REPORT.md) for full methodology and per-model numbers.
 
 ## Caveats
 
-- **Streaming bypasses batching** — `stream: true` requests go directly to Ollama without passing through the scheduler. Throttler admission control, circuit breaker, and cache lookup/storage are still applied.
-- **Batching is concurrent fanout, not true batching** — Ollama's API processes one request at a time. `dispatch_batch()` issues requests concurrently but Ollama serialises them internally.
-- **Memory estimates are heuristic** — the throttler uses a fixed per-request estimate (0.5 GB). There is no feedback from Ollama's actual memory usage.
+- **Ollama is single-threaded** — concurrent "batching" is fan-out of individual calls, not true GPU batching. Measured speedup is 1.15–1.17× (model loading amortisation), not the 2–4× that true batching provides.
+- **Memory estimates are heuristic** — the throttler uses a fixed 0.5 GB per-request estimate. Real memory depends on prompt length, model quantisation, and system state.
+- **Cache is in-process** — no persistence across restarts, no shared cache across workers. Use `workers: 1` or accept cold cache on restart.
+- **Single backend** — designed for Ollama. The `InferenceBackend` ABC exists for extensibility but only Ollama is implemented.
 
-## Roadmap
+## Testing
 
-- [ ] Swap aggregator's `OllamaClient` for `InferenceBackend` interface to enable vLLM/TGI backends at runtime
-- [ ] Event-driven batch formation (background drain loop)
-- [ ] Request preemption — high-priority requests can interrupt running batches
-- [ ] Re-benchmark with current architecture; add TTFT (time to first token) metrics
-- [ ] Cluster mode — multiple engine instances with shared cache (Redis)
+```bash
+pip install -e ".[dev]"
+python3 -m pytest tests/unit/ --no-cov -q   # 616 tests, ~3 seconds
+ruff check src/ tests/                       # linting
+mypy src/llm_inference_engine --strict       # type checking
+```
+
+## Documentation
+
+| Document | Purpose |
+|----------|---------|
+| [Architecture](docs/architecture.md) | Component design, request lifecycle, design decisions |
+| [Usage Guide](docs/usage_guide.md) | When the engine helps, configuration tuning, troubleshooting |
+| [Integration Guide](docs/integration_guide.md) | API reference, streaming, error handling, Docker deployment |
+| [Performance Report](docs/PERFORMANCE_REPORT.md) | Benchmark methodology and per-model results |
 
 ## Contributing
 
-See [CONTRIBUTING.md](CONTRIBUTING.md).
+See [CONTRIBUTING.md](CONTRIBUTING.md) for setup instructions, code style, and PR workflow.
 
 ## License
 
