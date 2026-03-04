@@ -8,7 +8,7 @@
 
 ---
 
-## Cache Hit Latency (S3)
+## Cache Hit Latency
 
 | Model | Mean hit (ms) | Min (ms) | Max (ms) | Speedup vs baseline |
 |---|---|---|---|---|
@@ -21,14 +21,14 @@
 >
 > ¹ deepseek-r1 excluded from S2 baseline; its cold requests take 40–120s, so cache hits represent 20,000–60,000x speedup.
 
-## Sequential Throughput — 10 Requests (S6)
+## Sequential Throughput — 10 Requests
 
 | Model | Direct Ollama (req/s) | Engine cold (req/s) | Engine cached (req/s) | Cached speedup |
 |---|---|---|---|---|
 | `mistral:7b` | 0.20 | 0.27 | 426.39 | **2086.7x** |
 | `llama3.1:8b` | 0.82 | 0.77 | 414.91 | **504.6x** |
 
-## Mixed Workload — 60% Cache Hit Rate (S4)
+## Mixed Workload — 60% Cache Hit Rate
 
 | Model | Direct wall (ms) | Engine wall (ms) | Speedup |
 |---|---|---|---|
@@ -37,7 +37,7 @@
 
 > ¹ mistral S4 hit 100% cache due to prompts already cached from earlier scenarios; true 60% hit rate speedup is ~2x (similar to llama3.1).
 
-## Concurrent Burst — 4 Parallel Requests (S5)
+## Concurrent Burst — 4 Parallel Requests
 
 | Model | Sequential total (ms) | Concurrent wall (ms) | Speedup |
 |---|---|---|---|
@@ -55,7 +55,7 @@
 | `mistral:7b` | Medium (~80 tok) | 20358 | 16949 | -3409 ms | -17% |
 | `llama3.1:8b` | Medium (~80 tok) | 19695 | 16858 | -2836 ms | -14% |
 
-## Streaming — Time to First Token (S7)
+## Streaming — Time to First Token
 
 | Model | TTFT (ms) | Stream total (ms) | Non-stream (ms) |
 |---|---|---|---|
@@ -68,7 +68,7 @@
 >
 > ¹ deepseek-r1 non-streaming requests timed out during benchmark; streaming still completed successfully.
 
-## Chat Completions Overhead (S8)
+## Chat Completions Overhead
 
 | Model | Ollama /api/chat (ms) | Engine /chat/completions (ms) | Overhead |
 |---|---|---|---|
@@ -91,7 +91,7 @@
 
 ## Methodology
 
-- 8 scenarios (S1–S8) across 4 models (deepseek-r1 excluded from S1/S2/S4/S5/S6 due to extreme latency)
+- 8 scenarios across 4 models (deepseek-r1 excluded from latency-sensitive scenarios due to extreme latency)
 - `max_tokens` set identically on both Ollama and engine paths
 - 1 warmup run discarded; 3 measured runs averaged (10 for cache scenario)
 - Engine cold path uses unique prompt suffix per run to force cache miss
