@@ -106,7 +106,7 @@ scheduling:
 | `token_budget` | Maximise throughput when request lengths vary widely |
 
 **For a single-user desktop assistant**: `fcfs` with `max_requests_per_batch: 4` is sufficient.  
-**For a multi-user local server** (family/team): `sjf` with `max_requests_per_batch: 8`.
+**For a multi-user local server** (family/team): `sjf` with `max_requests_per_batch: 8`.  SJF includes a starvation guard — requests waiting longer than 30 seconds are promoted to the front of the batch regardless of size.
 
 ### Memory
 

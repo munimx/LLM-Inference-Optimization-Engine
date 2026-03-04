@@ -186,13 +186,14 @@ The LLM Inference Optimization Engine is built as an orchestration layer on top 
 |---|---|---|
 | `RequestQueue` | `queue.py` | Async priority queue with FIFO tie-breaking and cancellation |
 | `Batch` | `batch.py` | Groups requests with token budget and memory footprint tracking |
-| `SchedulingPolicy` | `policies.py` | FCFS, SJF, Priority, TokenBudget batch formation strategies |
-| `Scheduler` | `scheduler.py` | Per-model queues → policy → batch dispatch orchestration |
+| `SchedulingPolicy` | `policies.py` | FCFS, SJF (with starvation guard), Priority, TokenBudget batch formation strategies |
+| `Scheduler` | `scheduler.py` | Per-model queues → policy → batch dispatch with timeout and overflow re-enqueue |
 
 **Data flow:**
 ```
 submit(Request) → per-model RequestQueue
 drain(model)    → collect requests → form Batch via policy → dispatch_fn(Batch)
+                  overflow re-enqueued ↑                     timeout/error → FAILED
 ```
 
 ### Phase 4: Memory & Capacity Planning (`src/llm_inference_engine/optimization/`)
@@ -213,7 +214,7 @@ drain(model)    → collect requests → form Batch via policy → dispatch_fn(B
 | Component | File | Responsibility |
 |---|---|---|
 | `CompletionRequest/Response` | `models.py` | OpenAI-compatible Pydantic models |
-| `SemanticCache` | `cache.py` | Exact-match LRU cache with TTL eviction |
+| `SemanticCache` | `cache.py` | Case-insensitive LRU cache with TTL eviction (`.lower().strip()` normalisation) |
 | `ResultMapper` | `result_mapper.py` | Maps request IDs to `asyncio.Future` objects |
 | `RequestAggregator` | `aggregator.py` | Cache check → schedule → dispatch → fan-in |
 | FastAPI app | `server.py` | `/completions`, `/chat/completions`, `/health`, `/metrics` |

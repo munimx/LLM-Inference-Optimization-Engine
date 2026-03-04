@@ -8,7 +8,7 @@ Request scheduling, caching, streaming, and inference orchestration middleware f
 
 ---
 
-Sits between your application and Ollama (or other inference backends). Incoming requests are checked against an exact-match or embedding-based semantic cache, queued by configurable scheduling policy, dispatched to the backend in concurrent batches, and streamed back via SSE or returned as a complete response. Features include API-key authentication, Prometheus metrics, request coalescing, and adaptive memory throttling.
+Sits between your application and Ollama (or other inference backends). Incoming requests are checked against a case-insensitive (`.lower().strip()`) response cache, queued by configurable scheduling policy, dispatched to the backend in concurrent batches, and streamed back via SSE or returned as a complete response. Features include API-key authentication, Prometheus metrics, request coalescing, and adaptive memory throttling.
 
 ## Architecture
 
