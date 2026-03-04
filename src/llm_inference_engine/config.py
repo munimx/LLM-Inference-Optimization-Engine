@@ -317,11 +317,14 @@ class InferenceConfig:
                 "enabled": self.cache.enabled,
                 "max_size": self.cache.max_size,
                 "ttl_seconds": self.cache.ttl_seconds,
+                "mode": self.cache.mode,
+                "embedding_model": self.cache.embedding_model,
             },
             "scheduling": {
                 "policy": self.scheduling.policy,
                 "max_requests_per_batch": self.scheduling.max_requests_per_batch,
                 "max_tokens_per_batch": self.scheduling.max_tokens_per_batch,
+                "drain_delay_seconds": self.scheduling.drain_delay_seconds,
             },
             "memory": {
                 "limit_gb": self.memory.limit_gb,
