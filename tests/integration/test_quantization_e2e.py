@@ -2,13 +2,13 @@ from pathlib import Path
 from unittest.mock import AsyncMock
 
 import pytest
-
 from llm_inference_engine.integration.ollama_models import ModelInfo, OllamaModelManager
 from llm_inference_engine.quantization import (
     BenchmarkConfig,
     BenchmarkSuite,
     QuantizationInfoCollector,
 )
+
 from llm_inference_engine.utils.reporting import BenchmarkReporter
 
 
