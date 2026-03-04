@@ -3,6 +3,8 @@
 import time
 from typing import Any
 
+import pytest
+
 from llm_inference_engine.core.types import (
     GenerationConfig,
     GenerationResult,
@@ -397,3 +399,56 @@ class TestScheduler:
         await scheduler.submit(_make_request("high", priority=10))
         await scheduler.drain(MODEL)
         assert dispatched[0] == "high"
+
+    async def test_dispatch_failure_marks_requests_failed(self) -> None:
+        """If dispatch_fn raises, batch requests should be marked FAILED."""
+        async def failing_dispatch(batch: Batch) -> list[Response]:
+            raise RuntimeError("Ollama crashed")
+
+        scheduler = Scheduler(dispatch_fn=failing_dispatch)
+        req = _make_request("r1")
+        await scheduler.submit(req)
+        with pytest.raises(RuntimeError, match="Ollama crashed"):
+            await scheduler.drain(MODEL)
+        assert req.status == RequestStatus.FAILED
+
+    async def test_overflow_requests_re_enqueued(self) -> None:
+        """Requests excluded by batch policy should be re-enqueued, not lost."""
+        now = time.time()
+        scheduler = Scheduler(
+            dispatch_fn=_simple_dispatch,
+            policy=SchedulingPolicy.TOKEN_BUDGET,
+            max_requests_per_batch=10,
+            max_tokens_per_batch=100,
+        )
+        # Submit a small and a big request — big won't fit in token budget with small
+        await scheduler.submit(_make_request("small", max_tokens=60, timestamp=now))
+        await scheduler.submit(_make_request("big", max_tokens=80, timestamp=now))
+        # First drain: small fits (60 < 100), big doesn't (60+80=140 > 100)
+        responses = await scheduler.drain(MODEL)
+        assert len(responses) == 1
+        assert responses[0].request_id == "small"
+        # big should still be in queue
+        assert scheduler.queue_size(MODEL) == 1
+        # Second drain gets big
+        responses2 = await scheduler.drain(MODEL)
+        assert len(responses2) == 1
+        assert responses2[0].request_id == "big"
+
+    async def test_dispatch_timeout_marks_failed(self) -> None:
+        """Dispatch timeout should mark requests as FAILED."""
+        import asyncio
+
+        async def slow_dispatch(batch: Batch) -> list[Response]:
+            await asyncio.sleep(10)
+            return [_make_response(r.request_id) for r in batch]
+
+        scheduler = Scheduler(
+            dispatch_fn=slow_dispatch,
+            dispatch_timeout_seconds=0.01,
+        )
+        req = _make_request("r1")
+        await scheduler.submit(req)
+        with pytest.raises(TimeoutError):
+            await scheduler.drain(MODEL)
+        assert req.status == RequestStatus.FAILED
