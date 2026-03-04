@@ -1,11 +1,17 @@
-# Ollama Service Configuration
-ollama:
-  host: localhost
-  port: 11434
-  timeout_seconds: 300
-  retry_count: 3
-  retry_backoff_seconds: 1.0
-  health_check_interval_seconds: 60
+# vLLM Service Configuration
+# List all vLLM instance URLs here — the BackendPool will round-robin across them.
+vllm:
+  instances:
+    - url: "http://localhost:8080"
+  timeout_seconds: 120
+  retry_count: 2
+  retry_backoff_seconds: 0.5
+  health_check_interval_seconds: 15
+
+# Redis Configuration
+redis:
+  url: "redis://localhost:6379/0"
+  socket_timeout_seconds: 5.0
 
 # API Server Configuration
 server:
@@ -15,53 +21,30 @@ server:
   reload: false
   log_level: INFO
 
-# Semantic Cache Configuration
+# Cache Configuration
 cache:
   enabled: true
   max_size: 256        # LRU eviction after this many entries
   ttl_seconds: 300.0   # entries older than this are treated as misses
 
-# Scheduling Configuration
-scheduling:
-  policy: fcfs                   # fcfs | sjf | priority | token_budget
-  max_requests_per_batch: 8
-  max_tokens_per_batch: 0        # 0 = unlimited
+# Admission Control (based on vLLM KV cache pressure)
+admission_control:
+  enabled: true
+  soft_limit: 0.70    # QUEUE above this fraction (0.0–1.0)
+  hard_limit: 0.90    # REJECT above this fraction (0.0–1.0)
+  poll_interval_seconds: 5.0
 
-# Memory / Admission Control Configuration
-memory:
-  limit_gb: 14.0       # hard memory limit (M2 Air default)
-  safety_margin: 1.1   # +10% over raw estimates
+# Circuit Breaker
+circuit_breaker:
+  failure_threshold: 5
+  cooldown_seconds: 30.0
 
-# Model Configurations
-models:
-  mistral:
-    name: "mistral:7b"
-    context_length: 8192
-    memory_gb: 4.1
-    quantization: "4-bit"
-    default_temperature: 0.7
-    default_top_p: 0.9
-  
-  llama3:
-    name: "llama3.1:8b"
-    context_length: 8192
-    memory_gb: 4.6
-    quantization: "4-bit"
-    default_temperature: 0.7
-    default_top_p: 0.9
-  
-  phi3:
-    name: "phi3:3.8b"
-    context_length: 4096
-    memory_gb: 2.0
-    quantization: "4-bit"
-    default_temperature: 0.7
-    default_top_p: 0.9
-  
-  deepseek:
-    name: "deepseek-r1:7b"
-    context_length: 4096
-    memory_gb: 4.4
-    quantization: "4-bit"
-    default_temperature: 0.7
-    default_top_p: 0.9
+# Model Registry
+# Maps logical names to vLLM model IDs served by the backend.
+# The router uses prompt token count to select fast vs. large model.
+model_registry:
+  fast_model: "mistralai/Mistral-7B-Instruct-v0.2"
+  large_model: "meta-llama/Meta-Llama-3-70B-Instruct"
+  fast_model_token_threshold: 512   # prompts shorter than this go to fast_model
+  fallback_model: "mistralai/Mistral-7B-Instruct-v0.2"
+  fallback_cache_similarity_threshold: 0.75
