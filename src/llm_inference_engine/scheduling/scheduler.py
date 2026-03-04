@@ -1,5 +1,6 @@
 """Scheduler: orchestrates queue → policy → batch formation → dispatch."""
 
+import asyncio
 import uuid
 from collections.abc import Callable, Coroutine
 from typing import Any
@@ -43,6 +44,7 @@ queue.RequestQueue` per model and uses the selected
         max_requests_per_batch: int = 8,
         max_tokens_per_batch: int = 0,
         queue_maxsize: int = 0,
+        dispatch_timeout_seconds: float = 300.0,
     ) -> None:
         """Initialise the scheduler.
 
@@ -55,6 +57,8 @@ Response` objects (one per request in the batch).
             max_tokens_per_batch: Maximum total token budget per batch
                 (``0`` = unlimited).
             queue_maxsize: Maximum queue depth per model (``0`` = unbounded).
+            dispatch_timeout_seconds: Maximum time in seconds to wait for
+                dispatch_fn to complete (``0`` = no timeout).
         """
         self._dispatch_fn = dispatch_fn
         self._policy = get_policy(policy)
@@ -62,12 +66,14 @@ Response` objects (one per request in the batch).
         self._max_requests = max_requests_per_batch
         self._max_tokens = max_tokens_per_batch
         self._queue_maxsize = queue_maxsize
+        self._dispatch_timeout = dispatch_timeout_seconds if dispatch_timeout_seconds > 0 else None
         self._queues: dict[str, RequestQueue] = {}
         logger.info(
             "scheduler_initialized",
             policy=policy,
             max_requests_per_batch=max_requests_per_batch,
             max_tokens_per_batch=max_tokens_per_batch,
+            dispatch_timeout_seconds=dispatch_timeout_seconds,
         )
 
     # ------------------------------------------------------------------
@@ -164,7 +170,10 @@ Response` objects (one per request in the batch).
         )
 
         try:
-            responses = await self._dispatch_fn(batch)
+            responses = await asyncio.wait_for(
+                self._dispatch_fn(batch),
+                timeout=self._dispatch_timeout,
+            )
         except Exception:
             for req in batch:
                 req.status = RequestStatus.FAILED
