@@ -478,7 +478,6 @@ def create_app(config: InferenceConfig | None = None) -> FastAPI:
                     temperature=body.temperature,
                     top_p=body.top_p,
                     stop=body.stop,
-                    priority=body.priority,
                 ),
                 timeout=timeout,
             )

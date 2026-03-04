@@ -218,9 +218,11 @@ RequestCoalescer` for deduplicating identical in-flight requests.
         temperature: float = 0.7,
         top_p: float = 0.9,
         stop: list[str] | None = None,
-        priority: int = 0,
     ) -> Response:
         """Submit a chat completion request using Ollama's /api/chat endpoint.
+
+        Chat completions bypass the scheduler and go directly to Ollama,
+        so there is no priority-based ordering.
 
         Args:
             model: Ollama model tag.
@@ -229,7 +231,6 @@ RequestCoalescer` for deduplicating identical in-flight requests.
             temperature: Sampling temperature.
             top_p: Nucleus sampling probability.
             stop: Stop sequences.
-            priority: Request priority (higher = served sooner).
 
         Returns:
             A :class:`~llm_inference_engine.core.types.Response`.
