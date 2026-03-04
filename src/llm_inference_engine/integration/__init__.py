@@ -1,6 +1,7 @@
-"""Ollama integration package."""
+"""vLLM integration package."""
 
-from llm_inference_engine.integration.ollama_client import OllamaClient
-from llm_inference_engine.integration.ollama_models import ModelInfo, OllamaModelManager
+from llm_inference_engine.integration.backend import BackendResult, InferenceBackend
+from llm_inference_engine.integration.backend_pool import BackendPool
+from llm_inference_engine.integration.vllm_backend import VLLMBackend
 
-__all__ = ["OllamaClient", "ModelInfo", "OllamaModelManager"]
+__all__ = ["InferenceBackend", "BackendResult", "VLLMBackend", "BackendPool"]
