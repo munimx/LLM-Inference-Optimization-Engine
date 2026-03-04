@@ -1,559 +1,288 @@
-# Application Integration Guide
-
-The engine is an HTTP middleware layer that sits between your application and Ollama. Your application sends requests to the engine instead of Ollama directly; the engine handles caching, scheduling, batching, and memory throttling transparently.
-
-```
-Your App  →  POST localhost:8000/completions  →  Engine  →  Ollama :11434
-                                                    ↑
-                                              cache / scheduler
-                                              (Ollama never called on cache hit)
-```
-
----
-
-## Prerequisites
-
-1. **Ollama running locally** with at least one model pulled:
-   ```bash
-   ollama serve           # starts on localhost:11434
-   ollama pull llama3.1:8b
-   ```
-
-2. **Engine running:**
-   ```bash
-   pip install -e ".[dev]"
-   python scripts/start_server.py   # starts on localhost:8000
-   ```
-
-3. **Verify both are up:**
-   ```bash
-   curl -s http://localhost:8000/health | python -m json.tool
-   # {"status": "ok", "ollama_available": true, "version": "0.1.0", ...}
-   ```
-
----
-
-## Quick Start — One-URL Migration
-
-If your app currently calls Ollama's native API directly:
-
-**Before (Ollama native):**
-```bash
-curl http://localhost:11434/api/generate \
-  -d '{"model":"llama3.1:8b","prompt":"What is 2+2?","stream":false}'
-```
-
-**After (through engine):**
-```bash
-curl http://localhost:8000/completions \
-  -H "Content-Type: application/json" \
-  -d '{"model":"llama3.1:8b","prompt":"What is 2+2?"}'
-```
-
-Two differences:
-- Port `11434` → `8000`
-- Path `/api/generate` + Ollama format → `/completions` + OpenAI-compatible format
-- Response field `response` → `choices[0].text`
-
----
+# Integration Guide
 
 ## API Reference
 
+Base URL: `http://localhost:8000` (default)
+
+### Authentication
+
+Authentication is optional. When enabled, pass your API key as a Bearer token:
+
+```bash
+curl http://localhost:8000/completions \
+  -H "Authorization: Bearer your-api-key" \
+  -H "Content-Type: application/json" \
+  -d '{"model": "llama3.1:8b", "prompt": "Hello"}'
+```
+
+Unauthenticated requests receive `401 Unauthorized` when auth is enabled.
+
+---
+
 ### POST /completions
 
+Generate a text completion.
+
+**Request:**
+
 ```json
 {
-  "model":       "llama3.1:8b",
-  "prompt":      "Explain gradient descent in one paragraph.",
-  "max_tokens":  256,
+  "model": "llama3.1:8b",
+  "prompt": "Explain quicksort in one paragraph",
+  "max_tokens": 256,
   "temperature": 0.7,
-  "top_p":       0.9,
-  "stop":        [],
-  "priority":    0
+  "stream": false
 }
 ```
 
-| Field | Type | Default | Notes |
-|-------|------|---------|-------|
-| `model` | string | required | Any model tag from `ollama list` |
-| `prompt` | string | required | Non-empty |
-| `max_tokens` | int | 256 | 1–32768 |
-| `temperature` | float | 0.7 | 0.0–2.0 |
-| `top_p` | float | 0.9 | 0.0–1.0 |
-| `stop` | string[] | `[]` | Stop sequences |
-| `priority` | int | 0 | 0–10 (higher = scheduled first with `priority` policy) |
+| Field | Type | Required | Default | Description |
+|-------|------|----------|---------|-------------|
+| `model` | string | yes | — | Ollama model name |
+| `prompt` | string | yes | — | Input text |
+| `max_tokens` | int | no | 256 | Maximum tokens to generate |
+| `temperature` | float | no | 0.7 | Sampling temperature (0.0–2.0) |
+| `stream` | bool | no | false | Enable SSE streaming |
 
-**Response:**
+**Response (non-streaming):**
+
 ```json
 {
-  "id":      "req_abc123",
-  "object":  "text_completion",
-  "model":   "llama3.1:8b",
-  "choices": [{"index": 0, "text": "Gradient descent is...", "finish_reason": "stop"}],
-  "usage":   {"prompt_tokens": 12, "completion_tokens": 47, "total_tokens": 59},
-  "latency_ms": 1423.7
+  "text": "Quicksort is a divide-and-conquer algorithm...",
+  "model": "llama3.1:8b",
+  "tokens_generated": 87,
+  "processing_time": 2.41
 }
 ```
+
+**Response (streaming):**
+
+```
+data: {"text": "Quick", "done": false}
+data: {"text": "sort", "done": false}
+data: {"text": " is", "done": false}
+...
+data: {"text": "", "done": true, "tokens_generated": 87, "processing_time": 2.41}
+```
+
+Each SSE event is a JSON object. The final event has `"done": true` with summary fields.
 
 ---
 
 ### POST /chat/completions
 
+Generate a chat completion with message history.
+
+**Request:**
+
 ```json
 {
   "model": "llama3.1:8b",
   "messages": [
-    {"role": "system",    "content": "You are a helpful assistant."},
-    {"role": "user",      "content": "What is gradient descent?"},
-    {"role": "assistant", "content": "It's an optimization algorithm."},
-    {"role": "user",      "content": "Give me a concrete example."}
+    {"role": "system", "content": "You are a helpful assistant."},
+    {"role": "user", "content": "What is 2+2?"}
   ],
-  "max_tokens":  512,
-  "temperature": 0.7
+  "max_tokens": 128,
+  "temperature": 0.7,
+  "stream": false
 }
 ```
 
-**Response:**
-```json
-{
-  "id":    "req_def456",
-  "object": "chat.completion",
-  "model": "llama3.1:8b",
-  "choices": [{
-    "index": 0,
-    "message": {"role": "assistant", "content": "Consider training a neural network..."},
-    "finish_reason": "stop"
-  }],
-  "usage":      {"prompt_tokens": 38, "completion_tokens": 89, "total_tokens": 127},
-  "latency_ms": 2841.3
-}
-```
+| Field | Type | Required | Default | Description |
+|-------|------|----------|---------|-------------|
+| `model` | string | yes | — | Ollama model name |
+| `messages` | array | yes | — | Array of `{role, content}` objects |
+| `max_tokens` | int | no | 256 | Maximum tokens to generate |
+| `temperature` | float | no | 0.7 | Sampling temperature |
+| `stream` | bool | no | false | Enable SSE streaming |
+
+**Response:** Same format as `/completions`.
 
 ---
-
-## Integration Patterns
-
-### curl (any shell script or CI pipeline)
-
-```bash
-ENGINE="http://localhost:8000"
-
-# Text completion
-curl -s "$ENGINE/completions" \
-  -H "Content-Type: application/json" \
-  -d '{
-    "model": "mistral:7b",
-    "prompt": "Summarise the following in one sentence: '"$TEXT"'",
-    "max_tokens": 64
-  }' | python -m json.tool
-
-# Chat completion
-curl -s "$ENGINE/chat/completions" \
-  -H "Content-Type: application/json" \
-  -d '{
-    "model": "mistral:7b",
-    "messages": [
-      {"role": "user", "content": "What is the capital of France?"}
-    ]
-  }' | python -c "import sys,json; print(json.load(sys.stdin)['choices'][0]['message']['content'])"
-```
-
----
-
-### Python — `requests`
-
-```python
-import requests
-
-ENGINE = "http://localhost:8000"
-
-def complete(prompt: str, model: str = "llama3.1:8b", max_tokens: int = 256) -> str:
-    resp = requests.post(
-        f"{ENGINE}/completions",
-        json={"model": model, "prompt": prompt, "max_tokens": max_tokens},
-        timeout=120,
-    )
-    resp.raise_for_status()
-    return resp.json()["choices"][0]["text"]
-
-def chat(messages: list[dict], model: str = "llama3.1:8b") -> str:
-    resp = requests.post(
-        f"{ENGINE}/chat/completions",
-        json={"model": model, "messages": messages, "max_tokens": 512},
-        timeout=120,
-    )
-    resp.raise_for_status()
-    return resp.json()["choices"][0]["message"]["content"]
-
-# Usage
-answer = complete("Explain KV-cache in one sentence.")
-reply = chat([{"role": "user", "content": "What is attention in transformers?"}])
-```
-
----
-
-### Python — `httpx` (async)
-
-```python
-import httpx
-import asyncio
-
-ENGINE = "http://localhost:8000"
-
-async def complete(prompt: str, model: str = "llama3.1:8b") -> str:
-    async with httpx.AsyncClient(timeout=120) as client:
-        resp = await client.post(
-            f"{ENGINE}/completions",
-            json={"model": model, "prompt": prompt, "max_tokens": 256},
-        )
-        resp.raise_for_status()
-        return resp.json()["choices"][0]["text"]
-
-async def batch_complete(prompts: list[str], model: str = "llama3.1:8b") -> list[str]:
-    """Send multiple prompts concurrently — engine batches them automatically."""
-    async with httpx.AsyncClient(timeout=120) as client:
-        tasks = [
-            client.post(
-                f"{ENGINE}/completions",
-                json={"model": model, "prompt": p, "max_tokens": 256},
-            )
-            for p in prompts
-        ]
-        responses = await asyncio.gather(*tasks)
-        return [r.json()["choices"][0]["text"] for r in responses]
-```
-
----
-
-### Python — OpenAI SDK
-
-The engine's `/completions` and `/chat/completions` endpoints use the same JSON shape as OpenAI's API. You can use the `openai` Python package by pointing it at the engine:
-
-```bash
-pip install openai
-```
-
-```python
-from openai import OpenAI
-
-client = OpenAI(
-    base_url="http://localhost:8000",  # engine, not api.openai.com
-    api_key="not-needed",              # required by SDK but ignored by engine
-)
-
-# Text completion
-resp = client.completions.create(
-    model="llama3.1:8b",
-    prompt="Explain gradient descent.",
-    max_tokens=256,
-)
-print(resp.choices[0].text)
-
-# Chat completion
-resp = client.chat.completions.create(
-    model="mistral:7b",
-    messages=[{"role": "user", "content": "What is backpropagation?"}],
-    max_tokens=512,
-)
-print(resp.choices[0].message.content)
-```
-
-> **Note:** `prompt_tokens` is populated from Ollama's `prompt_eval_count` when available, with a server-side estimate as fallback. `completion_tokens` is always accurate.
-
----
-
-### Node.js — `fetch`
-
-```javascript
-const ENGINE = "http://localhost:8000";
-
-async function complete(prompt, model = "llama3.1:8b", maxTokens = 256) {
-  const res = await fetch(`${ENGINE}/completions`, {
-    method: "POST",
-    headers: { "Content-Type": "application/json" },
-    body: JSON.stringify({ model, prompt, max_tokens: maxTokens }),
-    signal: AbortSignal.timeout(120_000),
-  });
-  if (!res.ok) throw new Error(`Engine error: ${res.status}`);
-  const data = await res.json();
-  return data.choices[0].text;
-}
-
-async function chat(messages, model = "llama3.1:8b") {
-  const res = await fetch(`${ENGINE}/chat/completions`, {
-    method: "POST",
-    headers: { "Content-Type": "application/json" },
-    body: JSON.stringify({ model, messages, max_tokens: 512 }),
-    signal: AbortSignal.timeout(120_000),
-  });
-  if (!res.ok) throw new Error(`Engine error: ${res.status}`);
-  const data = await res.json();
-  return data.choices[0].message.content;
-}
-
-// Usage
-const answer = await complete("What is a transformer model?");
-const reply  = await chat([{ role: "user", content: "Explain attention." }]);
-```
-
----
-
-### Node.js — OpenAI SDK
-
-```bash
-npm install openai
-```
-
-```javascript
-import OpenAI from "openai";
-
-const client = new OpenAI({
-  baseURL: "http://localhost:8000",
-  apiKey: "not-needed",
-});
-
-const resp = await client.chat.completions.create({
-  model: "llama3.1:8b",
-  messages: [{ role: "user", content: "What is RLHF?" }],
-  max_tokens: 256,
-});
-
-console.log(resp.choices[0].message.content);
-```
-
----
-
-## Ollama Cloud and Remote Ollama
-
-### Does this engine work with Ollama Cloud?
-
-**Ollama.com is a model library** (browse and `ollama pull` models). It is not a hosted inference API. There is no "Ollama Cloud" service that runs inference — all Ollama inference runs locally on your machine. This engine is designed for exactly that local setup.
-
-If you want cloud-hosted LLM inference (pay-per-token), you would use OpenAI, Anthropic, Groq, Together, or similar providers directly. Those services already expose OpenAI-compatible APIs — they do not benefit from this engine's local caching and scheduling layer.
-
-### Can I point the engine at a remote Ollama instance?
-
-Yes. The engine talks to Ollama over HTTP. If Ollama is running on another machine (a LAN server, a VPS, or another Mac on the same network), set `ollama.host` in `configs/default.yaml`:
-
-```yaml
-ollama:
-  host: 192.168.1.50     # IP or hostname of the machine running Ollama
-  port: 11434
-  timeout_seconds: 300
-  retry_backoff_seconds: 2.0   # increase for LAN latency
-```
-
-Then run the engine on any machine that can reach that host. Your application always talks to the engine (`localhost:8000`).
-
-```
-App (machine A)  →  Engine (machine A, :8000)  →  Ollama (machine B, :11434)
-```
-
-> **Ollama firewall note:** By default Ollama only binds to `127.0.0.1`. To allow remote connections, start it with `OLLAMA_HOST=0.0.0.0 ollama serve` on the Ollama machine.
-
----
-
-## Health Checks and Observability
 
 ### GET /health
 
-Use this in your load balancer, Docker healthcheck, or Kubernetes liveness probe:
-
-```bash
-curl -sf http://localhost:8000/health
-```
+**Response:**
 
 ```json
 {
-  "status": "ok",          // "ok" | "degraded" (Ollama unreachable)
-  "ollama_available": true,
-  "version": "0.1.0",
-  "details": {"pending_requests": 0}
+  "status": "healthy",
+  "ollama_connected": true,
+  "circuit_breaker_state": "closed",
+  "queue_depth": 0
 }
 ```
 
-Exit code is 0 on 200, non-zero on any error — usable directly in shell scripts.
-
-**Docker healthcheck:**
-```dockerfile
-HEALTHCHECK --interval=30s --timeout=5s --retries=3 \
-  CMD curl -sf http://localhost:8000/health || exit 1
-```
+---
 
 ### GET /metrics
 
-```bash
-curl -s http://localhost:8000/metrics | python -m json.tool
-```
+**Response:**
 
 ```json
 {
-  "committed_memory_gb": 9.1,
-  "available_memory_gb": 4.9,
-  "memory_limit_gb": 14.0,
-  "active_requests": 2,
-  "cache_hits": 847,
-  "cache_misses": 312,
-  "total_requests": 1159
+  "cache_hits": 142,
+  "cache_misses": 58,
+  "total_requests": 200,
+  "active_models": ["llama3.1:8b"],
+  "memory_usage_gb": 4.2
 }
 ```
 
-Use `cache_hits / total_requests` to monitor cache hit rate. A rate below 30% in your workload means caching is not helping much — review whether your prompts vary too much.
-
 ---
+
+### GET /metrics/prometheus
+
+Returns metrics in Prometheus exposition format:
+
+```
+# HELP llm_request_duration_seconds Request processing duration
+# TYPE llm_request_duration_seconds histogram
+llm_request_duration_seconds_bucket{le="0.1"} 142
+...
+```
 
 ## Error Handling
 
-| HTTP Status | Meaning | Action |
-|-------------|---------|--------|
-| `200` | Success | Read `choices[0].text` or `choices[0].message.content` |
-| `422` | Validation error | Fix request body (empty prompt, bad model name format, etc.) |
-| `429` | Queue full / admission rejected | Too many concurrent requests; retry with backoff |
-| `503` | Ollama unreachable or memory limit exceeded | Retry with backoff; check `GET /health` |
-| `504` | Request timed out | Ollama took too long; increase timeout or reduce `max_tokens` |
+| Status | Meaning | When |
+|--------|---------|------|
+| `200` | Success | Request completed |
+| `400` | Bad Request | Invalid model name, missing required fields |
+| `401` | Unauthorized | Auth enabled and no/invalid Bearer token |
+| `429` | Too Many Requests | Memory throttler rejected the request |
+| `503` | Service Unavailable | Circuit breaker is open or Ollama unreachable |
+| `500` | Internal Error | Unexpected failure during inference |
+
+Error responses include a JSON body:
+
+```json
+{
+  "detail": "Circuit breaker is open — backend unavailable"
+}
+```
+
+## Streaming Integration
+
+### Python (httpx)
 
 ```python
-import requests
-from requests.exceptions import Timeout, ConnectionError
+import httpx
 
-def safe_complete(prompt: str, model: str = "llama3.1:8b") -> str | None:
-    try:
-        resp = requests.post(
-            "http://localhost:8000/completions",
-            json={"model": model, "prompt": prompt, "max_tokens": 256},
-            timeout=120,
-        )
-        if resp.status_code == 503:
-            print("Engine overloaded or Ollama down — retry later")
-            return None
-        resp.raise_for_status()
-        return resp.json()["choices"][0]["text"]
-    except Timeout:
-        print("Request timed out — consider increasing timeout or reducing max_tokens")
-        return None
-    except ConnectionError:
-        print("Engine not running — start with: python scripts/start_server.py")
-        return None
+with httpx.stream("POST", "http://localhost:8000/completions", json={
+    "model": "llama3.1:8b",
+    "prompt": "Write a haiku about coding",
+    "stream": True
+}) as response:
+    for line in response.iter_lines():
+        if line.startswith("data: "):
+            print(line[6:])
 ```
 
----
+### JavaScript (fetch)
 
-## Production Deployment
+```javascript
+const response = await fetch("http://localhost:8000/completions", {
+  method: "POST",
+  headers: { "Content-Type": "application/json" },
+  body: JSON.stringify({
+    model: "llama3.1:8b",
+    prompt: "Write a haiku about coding",
+    stream: true,
+  }),
+});
 
-### Running the engine as a persistent service (macOS launchd)
+const reader = response.body.getReader();
+const decoder = new TextDecoder();
 
-Create `~/Library/LaunchAgents/com.llm-engine.plist`:
-
-```xml
-<?xml version="1.0" encoding="UTF-8"?>
-<!DOCTYPE plist PUBLIC "-//Apple//DTD PLIST 1.0//EN"
-  "http://www.apple.com/DTDs/PropertyList-1.0.dtd">
-<plist version="1.0">
-<dict>
-  <key>Label</key>             <string>com.llm-engine</string>
-  <key>ProgramArguments</key>
-  <array>
-    <string>/usr/bin/python3</string>
-    <string>/path/to/engine/scripts/start_server.py</string>
-  </array>
-  <key>RunAtLoad</key>         <true/>
-  <key>KeepAlive</key>         <true/>
-  <key>StandardOutPath</key>   <string>/tmp/llm-engine.log</string>
-  <key>StandardErrorPath</key> <string>/tmp/llm-engine.err</string>
-</dict>
-</plist>
+while (true) {
+  const { done, value } = await reader.read();
+  if (done) break;
+  const text = decoder.decode(value);
+  for (const line of text.split("\n")) {
+    if (line.startsWith("data: ")) {
+      const data = JSON.parse(line.slice(6));
+      process.stdout.write(data.text || "");
+    }
+  }
+}
 ```
-
-```bash
-launchctl load ~/Library/LaunchAgents/com.llm-engine.plist
-```
-
-### Docker
-
-```dockerfile
-FROM python:3.11-slim
-WORKDIR /app
-COPY . .
-RUN pip install -e ".[dev]"
-EXPOSE 8000
-HEALTHCHECK --interval=30s --timeout=5s --retries=3 \
-  CMD curl -sf http://localhost:8000/health || exit 1
-CMD ["python", "scripts/start_server.py", "--host", "0.0.0.0", "--port", "8000"]
-```
-
-Point `ollama.host` in `configs/default.yaml` at the Docker host IP (or use `host.docker.internal` on macOS).
-
-### Timeout recommendations
-
-| Model | Suggested `timeout` in client | Notes |
-|-------|-------------------------------|-------|
-| phi3:latest | 30s | Fast, small model |
-| mistral:7b | 60s | Standard generation |
-| llama3.1:8b | 90s | Longer context windows |
-| deepseek-r1:7b | 300s | Reasoning model — emits chain-of-thought |
-
----
-
-## Streaming
-
-Both `/completions` and `/chat/completions` support SSE streaming via the `stream` parameter. Streamed responses are cached for subsequent requests.
 
 ### curl
 
 ```bash
 curl -N http://localhost:8000/completions \
   -H "Content-Type: application/json" \
-  -d '{"model": "llama3.1:8b", "prompt": "Explain TCP/IP.", "stream": true}'
+  -d '{"model": "llama3.1:8b", "prompt": "Write a haiku", "stream": true}'
 ```
 
-Each SSE line contains a JSON chunk:
-```
-data: {"choices": [{"text": "TCP", "finish_reason": null}]}
-data: {"choices": [{"text": "/IP", "finish_reason": null}]}
-data: {"choices": [{"text": " is", "finish_reason": null}]}
-...
-data: {"choices": [{"text": "", "finish_reason": "stop"}]}
-data: [DONE]
-```
+The `-N` flag disables buffering for real-time output.
 
-### Python
+## Docker Deployment
 
-```python
-import httpx
+### docker-compose (recommended)
 
-async def stream_completion(prompt: str, model: str = "llama3.1:8b") -> str:
-    full_text = []
-    async with httpx.AsyncClient(timeout=120) as client:
-        async with client.stream(
-            "POST",
-            "http://localhost:8000/completions",
-            json={"model": model, "prompt": prompt, "stream": True},
-        ) as resp:
-            async for line in resp.aiter_lines():
-                if line.startswith("data: ") and line != "data: [DONE]":
-                    import json
-                    chunk = json.loads(line[6:])
-                    text = chunk["choices"][0]["text"]
-                    print(text, end="", flush=True)
-                    full_text.append(text)
-    return "".join(full_text)
+```bash
+docker compose up --build
 ```
 
----
+This starts:
+- **Ollama** on port 11434 with a health check
+- **Engine** on port 8000, depends on Ollama health
 
-## Differences from Direct Ollama
+### Standalone Docker
 
-| | Direct Ollama | Engine |
-|--|---------------|--------|
-| Port | 11434 | 8000 |
-| Endpoint | `/api/generate` · `/api/chat` | `/completions` · `/chat/completions` |
-| Request format | Ollama-native | OpenAI-compatible |
-| Response field | `response` | `choices[0].text` |
-| Streaming | ✅ Supported | ✅ SSE streaming with cache integration |
-| Cache | ❌ None | ✅ LRU exact-match (2ms hit latency) |
-| Batching | ❌ None | ✅ Up to 8 concurrent requests per drain cycle |
-| Scheduling | ❌ None | ✅ FCFS / SJF / Priority / Token-budget |
-| Memory guard | ❌ None | ✅ 503 on memory limit breach |
-| Model tagging | Any valid Ollama tag | Same — use `ollama list` tags directly |
+```bash
+docker build -t llm-engine .
+docker run -p 8000:8000 \
+  -e OLLAMA_HOST=host.docker.internal \
+  llm-engine
+```
 
-The engine does not expose Ollama's `/api/tags`, `/api/show`, or `/api/pull` endpoints. Use the Ollama CLI for model management.
+Use `host.docker.internal` when Ollama runs on the host machine outside Docker.
+
+### Configuration in Docker
+
+The compose file mounts `./configs/` read-only into the container. Edit `configs/default.yaml` on the host and restart the container to apply changes.
+
+Environment variable overrides:
+- `OLLAMA_HOST` — Ollama hostname (default: `localhost`)
+- `OLLAMA_PORT` — Ollama port (default: `11434`)
+
+## Ollama Model Management
+
+### Pulling Models
+
+```bash
+ollama pull llama3.1:8b
+ollama pull phi3
+ollama pull gemma:2b
+```
+
+### Listing Available Models
+
+```bash
+ollama list
+```
+
+### Model Memory Requirements
+
+| Model | Parameters | Quantisation | Approximate RAM |
+|-------|-----------|-------------|-----------------|
+| phi3 | 3.8B | Q4_K_M | ~2.5 GB |
+| gemma:2b | 2B | Q4_K_M | ~1.8 GB |
+| llama3.1:8b | 8B | Q4_K_M | ~5.0 GB |
+| deepseek-r1:8b | 8B | Q4_K_M | ~5.0 GB |
+
+Set `memory.limit_gb` in config to at least the size of your largest model plus 2 GB headroom.
+
+### Quantisation Levels
+
+Lower quantisation = less RAM, slightly lower quality:
+
+| Level | Bits | Quality | Speed |
+|-------|------|---------|-------|
+| Q4_K_M | 4-bit | Good | Fast |
+| Q5_K_M | 5-bit | Better | Moderate |
+| Q6_K | 6-bit | High | Slower |
+| Q8_0 | 8-bit | Near-original | Slowest |
+
+Most Ollama models default to Q4_K_M, which is a good balance for this engine's use case.
