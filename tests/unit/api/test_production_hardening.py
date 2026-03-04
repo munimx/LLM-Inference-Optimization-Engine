@@ -65,26 +65,6 @@ class TestCircuitBreaker:
         assert cb.state == CircuitState.CLOSED
 
 
-class TestQueueLimitConfig:
-    """Test SchedulingConfig with queue limit validation."""
-
-    def test_default_unlimited_queue(self):
-        from llm_inference_engine.config import SchedulingConfig
-        sc = SchedulingConfig()
-        assert sc.max_queue_depth == 0  # unlimited
-
-    def test_negative_queue_depth_rejected(self):
-        from llm_inference_engine.config import SchedulingConfig
-        from llm_inference_engine.exceptions import ConfigurationError
-        with pytest.raises(ConfigurationError, match="max_queue_depth"):
-            SchedulingConfig(max_queue_depth=-1)
-
-    def test_positive_queue_depth_accepted(self):
-        from llm_inference_engine.config import SchedulingConfig
-        sc = SchedulingConfig(max_queue_depth=100)
-        assert sc.max_queue_depth == 100
-
-
 class TestRequestTimeoutField:
     """Test timeout_seconds on request models."""
 

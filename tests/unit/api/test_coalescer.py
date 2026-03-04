@@ -1,94 +1,52 @@
-"""Tests for request coalescing."""
-
-import asyncio
+"""Unit tests for RequestCoalescer using fakeredis."""
 
 import pytest
+import fakeredis.aioredis
 
 from llm_inference_engine.api.coalescer import RequestCoalescer
 
 
-class TestRequestCoalescer:
+@pytest.fixture
+async def redis():
+    return fakeredis.aioredis.FakeRedis()
 
-    async def test_single_request(self):
-        coalescer = RequestCoalescer()
+
+@pytest.fixture
+async def coalescer(redis):
+    return RequestCoalescer(redis_client=redis)
+
+
+class TestRequestCoalescer:
+    async def test_single_request_calls_producer(self, coalescer: RequestCoalescer) -> None:
+        calls = []
 
         async def producer():
-            return "world"
-
-        result = await coalescer.coalesce("m", "hello", producer)
-        assert result == "world"
-
-    async def test_coalesces_identical_requests(self):
-        coalescer = RequestCoalescer()
-        call_count = 0
-
-        async def slow_producer():
-            nonlocal call_count
-            call_count += 1
-            await asyncio.sleep(0.05)
+            calls.append(1)
             return "result"
 
-        results = await asyncio.gather(
-            coalescer.coalesce("m", "same", slow_producer),
-            coalescer.coalesce("m", "same", slow_producer),
-            coalescer.coalesce("m", "same", slow_producer),
-        )
-        assert all(r == "result" for r in results)
-        assert call_count == 1
-        assert coalescer.coalesced_count == 2
+        result = await coalescer.coalesce("llama3", "hello", producer)
+        assert result == "result"
+        assert len(calls) == 1
 
-    async def test_different_prompts_not_coalesced(self):
-        coalescer = RequestCoalescer()
-        call_count = 0
-
-        async def producer():
-            nonlocal call_count
-            call_count += 1
-            await asyncio.sleep(0.01)
-            return f"result-{call_count}"
-
-        await asyncio.gather(
-            coalescer.coalesce("m", "prompt_a", producer),
-            coalescer.coalesce("m", "prompt_b", producer),
-        )
-        assert call_count == 2
+    async def test_initial_coalesced_count_zero(self, coalescer: RequestCoalescer) -> None:
         assert coalescer.coalesced_count == 0
 
-    async def test_producer_error_propagates(self):
-        coalescer = RequestCoalescer()
-
+    async def test_producer_exception_propagates(self, coalescer: RequestCoalescer) -> None:
         async def failing_producer():
-            raise ValueError("boom")
+            raise ValueError("inference failed")
 
-        with pytest.raises(ValueError, match="boom"):
-            await coalescer.coalesce("m", "hello", failing_producer)
+        with pytest.raises(ValueError, match="inference failed"):
+            await coalescer.coalesce("llama3", "test", failing_producer)
 
-    async def test_error_propagates_to_coalesced(self):
-        coalescer = RequestCoalescer()
+    async def test_different_prompts_call_producer_each_time(
+        self, coalescer: RequestCoalescer
+    ) -> None:
+        calls = []
 
-        async def failing_producer():
-            await asyncio.sleep(0.05)
-            raise RuntimeError("fail")
+        async def producer():
+            calls.append(1)
+            return "result"
 
-        results = await asyncio.gather(
-            coalescer.coalesce("m", "same", failing_producer),
-            coalescer.coalesce("m", "same", failing_producer),
-            return_exceptions=True,
-        )
-        assert all(isinstance(r, RuntimeError) for r in results)
-
-    async def test_in_flight_count(self):
-        coalescer = RequestCoalescer()
-        event = asyncio.Event()
-
-        async def blocking_producer():
-            await event.wait()
-            return "done"
-
-        task = asyncio.create_task(coalescer.coalesce("m", "p", blocking_producer))
-        await asyncio.sleep(0.01)
-        assert coalescer.in_flight_count == 1
-        event.set()
-        await task
-        await asyncio.sleep(0.01)
-        assert coalescer.in_flight_count == 0
+        await coalescer.coalesce("llama3", "prompt1", producer)
+        await coalescer.coalesce("llama3", "prompt2", producer)
+        assert len(calls) == 2

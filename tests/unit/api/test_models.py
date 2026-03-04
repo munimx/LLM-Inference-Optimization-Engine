@@ -107,27 +107,27 @@ class TestHealthAndMetricsModels:
 
     def test_health_response_defaults(self) -> None:
         from llm_inference_engine.api.models import HealthResponse
-        h = HealthResponse(status="ok", ollama_available=True)
+        h = HealthResponse(status="ok", backend_available=True)
         assert h.details == {}
-        assert h.version == "0.1.0"
+        assert h.version == "0.2.0"
 
     def test_health_response_degraded(self) -> None:
         from llm_inference_engine.api.models import HealthResponse
-        h = HealthResponse(status="degraded", ollama_available=False)
-        assert h.ollama_available is False
+        h = HealthResponse(status="degraded", backend_available=False)
+        assert h.backend_available is False
 
     def test_metrics_response_fields(self) -> None:
         from llm_inference_engine.api.models import MetricsResponse
         m = MetricsResponse(
-            committed_memory_gb=2.0,
-            available_memory_gb=12.0,
-            memory_limit_gb=14.0,
+            kv_cache_usage=0.35,
             active_requests=3,
+            healthy_backends=2,
             cache_hits=100,
             cache_misses=20,
             total_requests=500,
         )
         assert m.cache_hits == 100
+        assert m.healthy_backends == 2
 
     def test_error_response_minimal(self) -> None:
         from llm_inference_engine.api.models import ErrorResponse

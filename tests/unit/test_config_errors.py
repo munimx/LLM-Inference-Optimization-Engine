@@ -22,8 +22,8 @@ def test_not_a_dict(tmp_path: Path) -> None:
 
 def test_type_error(tmp_path: Path) -> None:
     p = tmp_path / "bad_type.yaml"
-    # unexpected argument for OllamaConfig
-    p.write_text("ollama:\n  unknown_field: 123")
+    # unexpected argument for vllm config
+    p.write_text("vllm:\n  unknown_field: 123")
 
-    with pytest.raises(ConfigurationError, match="Invalid ollama configuration"):
+    with pytest.raises(ConfigurationError, match="Invalid vllm configuration"):
         InferenceConfig.from_yaml(p)
