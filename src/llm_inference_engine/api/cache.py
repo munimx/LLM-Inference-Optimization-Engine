@@ -1,7 +1,8 @@
-"""Exact-match response cache for inference requests.
+"""Case-insensitive response cache for inference requests.
 
-Provides an exact-match cache with TTL expiry and LRU eviction.  Keys are
-``(model, prompt)`` tuples — only character-identical prompts hit the cache.
+Provides a response cache with TTL expiry and LRU eviction.  Keys are
+``(model, prompt)`` tuples — prompts are normalised via ``.lower().strip()``
+before lookup, so ``"Hello"`` and ``"  hello  "`` share the same cache entry.
 """
 
 import asyncio
@@ -24,11 +25,11 @@ class _CacheEntry:
 
 
 class ExactMatchCache:
-    """Exact-match response cache with TTL and LRU eviction.
+    """Response cache with case-insensitive key normalisation, TTL, and LRU eviction.
 
-    The cache key is a ``(model, prompt)`` tuple — only character-identical
-    prompts produce a hit.  Entries are evicted when they exceed *ttl_seconds*
-    or when the cache reaches *max_size* (LRU eviction).
+    The cache key is a ``(model, normalised_prompt)`` tuple where prompts are
+    normalised with ``.lower().strip()``.  Entries are evicted when they exceed
+    *ttl_seconds* or when the cache reaches *max_size* (LRU eviction).
 
     All public methods are coroutine-safe: an internal :class:`asyncio.Lock`
     serialises concurrent ``get``/``put`` operations to prevent race
