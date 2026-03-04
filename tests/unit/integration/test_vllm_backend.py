@@ -80,3 +80,96 @@ class TestVLLMBackendListModels:
         models = await backend.list_models()
         assert "llama3" in models
         assert "mistral" in models
+
+    @respx.mock
+    async def test_returns_empty_list_on_error(self, backend: VLLMBackend) -> None:
+        respx.get("http://vllm-test:8080/v1/models").mock(
+            side_effect=httpx.ConnectError("down")
+        )
+        models = await backend.list_models()
+        assert models == []
+
+
+class TestVLLMBackendClose:
+    async def test_close_releases_client(self, backend: VLLMBackend) -> None:
+        backend._client = httpx.AsyncClient()
+        await backend.close()
+        assert backend._client is None
+
+    async def test_close_is_idempotent_when_no_client(self, backend: VLLMBackend) -> None:
+        assert backend._client is None
+        await backend.close()  # Should not raise
+
+
+class TestVLLMBackendStopTokens:
+    @respx.mock
+    async def test_generate_passes_stop_tokens(self, backend: VLLMBackend) -> None:
+        respx.post("http://vllm-test:8080/v1/completions").mock(
+            return_value=httpx.Response(200, json={
+                "choices": [{"text": "done", "finish_reason": "stop"}],
+                "usage": {"completion_tokens": 1, "prompt_tokens": 2},
+            })
+        )
+        result = await backend.generate("llama3", "Hello", stop=["<|end|>"])
+        assert result.text == "done"
+
+    @respx.mock
+    async def test_chat_passes_stop_tokens(self, backend: VLLMBackend) -> None:
+        respx.post("http://vllm-test:8080/v1/chat/completions").mock(
+            return_value=httpx.Response(200, json={
+                "choices": [{"message": {"content": "bye"}, "finish_reason": "stop"}],
+                "usage": {"completion_tokens": 1, "prompt_tokens": 2},
+            })
+        )
+        result = await backend.chat(
+            "llama3", [{"role": "user", "content": "bye"}], stop=["<|end|>"]
+        )
+        assert result.text == "bye"
+
+
+class TestVLLMBackendRetry:
+    async def test_raises_after_all_retries_exhausted(self) -> None:
+        retrying = VLLMBackend("http://vllm-test:8080", timeout=1.0, max_retries=1, retry_backoff_seconds=0.0)
+        with respx.mock:
+            respx.post("http://vllm-test:8080/v1/completions").mock(
+                side_effect=httpx.ConnectError("down")
+            )
+            with pytest.raises(RuntimeError, match="failed after"):
+                await retrying.generate("llama3", "hello")
+        await retrying.close()
+
+
+class TestVLLMBackendStream:
+    @respx.mock
+    async def test_generate_stream_yields_chunks(self, backend: VLLMBackend) -> None:
+        sse_lines = (
+            'data: {"choices": [{"text": "hello", "finish_reason": null}]}\n\n'
+            'data: {"choices": [{"text": " world", "finish_reason": "stop"}]}\n\n'
+            "data: [DONE]\n\n"
+        )
+        respx.post("http://vllm-test:8080/v1/completions").mock(
+            return_value=httpx.Response(200, text=sse_lines)
+        )
+        chunks = []
+        async for chunk in backend.generate_stream("llama3", "Say hi"):
+            chunks.append(chunk)
+        assert len(chunks) == 2
+        assert chunks[0]["text"] == "hello"
+        assert chunks[1]["done"] is True
+
+    @respx.mock
+    async def test_chat_stream_yields_chunks(self, backend: VLLMBackend) -> None:
+        sse_lines = (
+            'data: {"choices": [{"delta": {"content": "Hi"}, "finish_reason": null}]}\n\n'
+            'data: {"choices": [{"delta": {"content": "!"}, "finish_reason": "stop"}]}\n\n'
+            "data: [DONE]\n\n"
+        )
+        respx.post("http://vllm-test:8080/v1/chat/completions").mock(
+            return_value=httpx.Response(200, text=sse_lines)
+        )
+        chunks = []
+        async for chunk in backend.chat_stream("llama3", [{"role": "user", "content": "hi"}]):
+            chunks.append(chunk)
+        assert len(chunks) == 2
+        assert chunks[0]["content"] == "Hi"
+        assert chunks[1]["done"] is True

@@ -90,3 +90,15 @@ class TestParseKvCacheUsage:
     def test_parses_scientific_notation(self) -> None:
         text = 'vllm:kv_cache_usage_perc{model_name="llama3"} 5.0e-01\n'
         assert _parse_kv_cache_usage(text) == pytest.approx(0.5)
+
+    def test_returns_zero_for_non_float_match(self) -> None:
+        # Regex matches (1e+ has valid chars) but float("1e+") raises ValueError
+        text = 'vllm:kv_cache_usage_perc{model_name="x"} 1e+\n'
+        assert _parse_kv_cache_usage(text) == 0.0
+
+
+class TestThrottlerKvCacheUsageProperty:
+    def test_kv_cache_usage_property(self) -> None:
+        throttler = AdaptiveThrottler("http://vllm:8080")
+        throttler._kv_usage = 0.65
+        assert throttler.kv_cache_usage == pytest.approx(0.65)
