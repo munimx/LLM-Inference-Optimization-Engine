@@ -1,21 +1,42 @@
-"""Adaptive throttler for memory-aware request admission control.
+"""Adaptive throttler for vLLM-metric-based admission control.
 
-The throttler tracks an estimate of currently committed memory and either
-*accepts*, *queues* (soft limit), or *rejects* (hard limit) new requests
-based on their predicted memory footprint versus the configured system
-memory limit.
+The throttler polls vLLM's ``/metrics`` Prometheus endpoint on a configurable
+interval and reads the ``vllm:kv_cache_usage_perc`` gauge.  New requests are
+admitted, queued, or rejected based on that real signal:
+
+- Below ``soft_limit``:            **ACCEPT**
+- Between ``soft_limit`` and ``hard_limit``:  **QUEUE**
+- At or above ``hard_limit``:      **REJECT**
+
+Usage::
+
+    throttler = AdaptiveThrottler(
+        backend_url="http://vllm:8080",
+        soft_limit=0.70,
+        hard_limit=0.90,
+        poll_interval_seconds=5.0,
+    )
+    await throttler.start()
+    decision = throttler.check()
+    # ... later ...
+    await throttler.stop()
 """
 
 import asyncio
+import re
 from dataclasses import dataclass
 from enum import StrEnum
 
+import httpx
 import structlog
 
 logger = structlog.get_logger(__name__)
 
-# Default hard memory ceiling for a 16 GB M2 Air (leaving ~2 GB for OS).
-_DEFAULT_MEMORY_LIMIT_GB: float = 14.0
+# Pattern to extract the kv cache usage gauge from Prometheus text format
+_KV_CACHE_RE = re.compile(
+    r'^vllm:kv_cache_usage_perc\{[^}]*\}\s+([\d.eE+\-]+)',
+    re.MULTILINE,
+)
 
 
 class AdmissionDecision(StrEnum):
@@ -36,151 +57,147 @@ class AdmissionDecision(StrEnum):
 class ThrottlerStats:
     """Snapshot of throttler state."""
 
-    committed_gb: float
-    available_gb: float
-    memory_limit_gb: float
-    soft_limit_gb: float
+    kv_cache_usage: float   # 0.0 – 1.0 as reported by vLLM
+    soft_limit: float
+    hard_limit: float
     active_requests: int
 
 
 class AdaptiveThrottler:
-    """Admission-control gate based on estimated memory pressure.
+    """Admission control based on vLLM KV cache pressure.
 
-    The throttler maintains a *committed_gb* counter that tracks the
-    sum of memory estimates for all active (in-flight) requests.  New
-    requests are admitted when the projected total stays below the
-    configured limits:
-
-    - Below ``soft_limit_ratio × memory_limit_gb``:  **ACCEPT**
-    - Between soft and hard limit:                  **QUEUE**
-    - At or above ``memory_limit_gb``:              **REJECT**
-
-    All methods are coroutine-safe.
+    Args:
+        backend_url: Base URL of the vLLM instance to poll.
+        soft_limit: KV cache fraction above which requests are queued.
+        hard_limit: KV cache fraction above which requests are rejected.
+        poll_interval_seconds: How often to fetch /metrics from vLLM.
     """
 
     def __init__(
         self,
-        memory_limit_gb: float = _DEFAULT_MEMORY_LIMIT_GB,
-        soft_limit_ratio: float = 0.85,
+        backend_url: str,
+        soft_limit: float = 0.70,
+        hard_limit: float = 0.90,
+        poll_interval_seconds: float = 5.0,
     ) -> None:
-        """Initialise the throttler.
-
-        Args:
-            memory_limit_gb: Hard memory ceiling in gigabytes.
-            soft_limit_ratio: Fraction of ``memory_limit_gb`` at which
-                the throttler starts queuing new requests (default 0.85).
-        """
-        if memory_limit_gb <= 0:
-            raise ValueError("memory_limit_gb must be positive")
-        if not 0.0 < soft_limit_ratio < 1.0:
-            raise ValueError("soft_limit_ratio must be between 0.0 and 1.0 (exclusive)")
-        self._memory_limit_gb = memory_limit_gb
-        self._soft_limit_gb = memory_limit_gb * soft_limit_ratio
-        self._committed_gb: float = 0.0
+        if not (0.0 < soft_limit < hard_limit <= 1.0):
+            raise ValueError(
+                "soft_limit must be in (0, hard_limit] and hard_limit <= 1.0"
+            )
+        self._backend_url = backend_url.rstrip("/")
+        self._soft_limit = soft_limit
+        self._hard_limit = hard_limit
+        self._poll_interval = poll_interval_seconds
+        self._kv_usage: float = 0.0
         self._active_requests: int = 0
-        self._lock = asyncio.Lock()
-        logger.info(
-            "throttler_initialized",
-            memory_limit_gb=memory_limit_gb,
-            soft_limit_gb=round(self._soft_limit_gb, 3),
-        )
+        self._poll_task: asyncio.Task[None] | None = None
+
+    # ------------------------------------------------------------------
+    # Lifecycle
+    # ------------------------------------------------------------------
+
+    async def start(self) -> None:
+        """Start the background polling task."""
+        if self._poll_task is None or self._poll_task.done():
+            self._poll_task = asyncio.create_task(
+                self._poll_loop(), name="throttler_poll"
+            )
+            logger.info(
+                "throttler_started",
+                backend=self._backend_url,
+                poll_interval=self._poll_interval,
+            )
+
+    async def stop(self) -> None:
+        """Stop the background polling task."""
+        if self._poll_task is not None and not self._poll_task.done():
+            self._poll_task.cancel()
+            try:
+                await self._poll_task
+            except asyncio.CancelledError:
+                pass
+        self._poll_task = None
 
     # ------------------------------------------------------------------
     # Public API
     # ------------------------------------------------------------------
 
-    async def check(self, estimated_memory_gb: float) -> AdmissionDecision:
-        """Evaluate whether a request with the given memory footprint can proceed.
+    def check(self) -> AdmissionDecision:
+        """Evaluate whether a new request can be admitted.
 
-        Args:
-            estimated_memory_gb: Predicted memory consumption in GB for
-                the new request (from :class:`~llm_inference_engine.\
-optimization.memory.MemoryEstimator`).
-
-        Returns:
-            An :class:`AdmissionDecision` indicating whether to accept,
-            queue, or reject the request.
+        Uses the last observed KV cache usage from the polling loop.
+        Thread-safe for reading (single float write is atomic in CPython).
         """
-        if estimated_memory_gb < 0:
-            raise ValueError("estimated_memory_gb cannot be negative")
+        usage = self._kv_usage
+        if usage >= self._hard_limit:
+            return AdmissionDecision.REJECT
+        if usage >= self._soft_limit:
+            return AdmissionDecision.QUEUE
+        return AdmissionDecision.ACCEPT
 
-        async with self._lock:
-            projected = self._committed_gb + estimated_memory_gb
+    def increment_active(self) -> None:
+        """Record that a new request has been dispatched."""
+        self._active_requests += 1
 
-            if projected >= self._memory_limit_gb:
-                decision = AdmissionDecision.REJECT
-            elif projected >= self._soft_limit_gb:
-                decision = AdmissionDecision.QUEUE
-            else:
-                decision = AdmissionDecision.ACCEPT
-
-        logger.debug(
-            "admission_check",
-            estimated_gb=round(estimated_memory_gb, 3),
-            committed_gb=round(self._committed_gb, 3),
-            projected_gb=round(projected, 3),
-            decision=decision,
-        )
-        return decision
-
-    async def reserve(self, request_id: str, estimated_memory_gb: float) -> None:
-        """Reserve memory for an admitted request.
-
-        Should be called immediately after :meth:`check` returns
-        :attr:`AdmissionDecision.ACCEPT` or :attr:`AdmissionDecision.QUEUE`
-        once the request is ready to be dispatched.
-
-        Args:
-            request_id: Identifier of the request being dispatched.
-            estimated_memory_gb: Memory amount to commit.
-        """
-        async with self._lock:
-            self._committed_gb += estimated_memory_gb
-            self._active_requests += 1
-        logger.debug(
-            "memory_reserved",
-            request_id=request_id,
-            reserved_gb=round(estimated_memory_gb, 3),
-            committed_gb=round(self._committed_gb, 3),
-        )
-
-    async def release(self, request_id: str, estimated_memory_gb: float) -> None:
-        """Release previously reserved memory when a request completes.
-
-        Args:
-            request_id: Identifier of the completed request.
-            estimated_memory_gb: Memory amount to free.
-        """
-        async with self._lock:
-            self._committed_gb = max(0.0, self._committed_gb - estimated_memory_gb)
-            self._active_requests = max(0, self._active_requests - 1)
-        logger.debug(
-            "memory_released",
-            request_id=request_id,
-            released_gb=round(estimated_memory_gb, 3),
-            committed_gb=round(self._committed_gb, 3),
-        )
+    def decrement_active(self) -> None:
+        """Record that a request has completed."""
+        self._active_requests = max(0, self._active_requests - 1)
 
     @property
     def stats(self) -> ThrottlerStats:
-        """Return a snapshot of the current throttler state."""
+        """Return a snapshot of current throttler state."""
         return ThrottlerStats(
-            committed_gb=self._committed_gb,
-            available_gb=max(0.0, self._memory_limit_gb - self._committed_gb),
-            memory_limit_gb=self._memory_limit_gb,
-            soft_limit_gb=self._soft_limit_gb,
+            kv_cache_usage=self._kv_usage,
+            soft_limit=self._soft_limit,
+            hard_limit=self._hard_limit,
             active_requests=self._active_requests,
         )
 
     @property
-    def committed_gb(self) -> float:
-        """Currently committed memory in gigabytes."""
-        return self._committed_gb
+    def kv_cache_usage(self) -> float:
+        """Last observed vLLM KV cache usage (0.0 – 1.0)."""
+        return self._kv_usage
 
-    @property
-    def memory_limit_gb(self) -> float:
-        """Hard memory ceiling in gigabytes."""
-        return self._memory_limit_gb
+    # ------------------------------------------------------------------
+    # Internal polling
+    # ------------------------------------------------------------------
+
+    async def _poll_loop(self) -> None:
+        """Repeatedly fetch vLLM /metrics and update _kv_usage."""
+        async with httpx.AsyncClient(timeout=5.0) as client:
+            while True:
+                try:
+                    response = await client.get(
+                        f"{self._backend_url}/metrics"
+                    )
+                    if response.status_code == 200:
+                        self._kv_usage = _parse_kv_cache_usage(response.text)
+                        logger.debug(
+                            "throttler_polled",
+                            kv_usage=round(self._kv_usage, 4),
+                        )
+                except Exception as exc:
+                    logger.debug(
+                        "throttler_poll_error",
+                        backend=self._backend_url,
+                        error=str(exc),
+                    )
+                await asyncio.sleep(self._poll_interval)
+
+
+def _parse_kv_cache_usage(metrics_text: str) -> float:
+    """Parse ``vllm:kv_cache_usage_perc`` from Prometheus text format.
+
+    Returns 0.0 if the metric is absent (safe default: allow requests through).
+    """
+    match = _KV_CACHE_RE.search(metrics_text)
+    if match is None:
+        return 0.0
+    try:
+        return float(match.group(1))
+    except ValueError:
+        return 0.0
 
 
 __all__ = ["AdaptiveThrottler", "AdmissionDecision", "ThrottlerStats"]
+
