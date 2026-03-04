@@ -1,139 +1,227 @@
 # Usage Guide
 
-## When This Engine Helps
+## When Does the Engine Help?
 
-The engine provides the most benefit when:
+The engine adds the most value when:
 
-- **Repeated prompts are common** — the response cache eliminates redundant inference. At 60% cache hit rate, measured throughput improves 2.15×.
-- **Multiple users hit the same model** — request coalescing deduplicates identical in-flight requests.
-- **You need request isolation** — the circuit breaker prevents one failing model from blocking all requests.
-- **Monitoring matters** — Prometheus metrics expose cache hit rate, request latency, queue depth, and token throughput.
+- **Many duplicate or near-duplicate requests** — the Redis cache and cross-worker coalescer prevent redundant backend calls. This is common in chatbots (repeated greetings, FAQ answers) or batch pipelines that reprocess the same text.
+- **Multiple vLLM instances** — the backend pool distributes load via round-robin and isolates failures with per-backend circuit breakers.
+- **Mixed prompt sizes** — the model router automatically sends short prompts to a fast model and long prompts to a large model, improving latency for the majority of requests without manual routing logic.
+- **GPU memory pressure** — the throttler reads `vllm:kv_cache_usage_perc` directly from vLLM and queues or rejects requests before OOM errors occur, rather than relying on heuristic memory estimates.
 
-### When It Won't Help Much
+---
 
-- **Every request is unique** — cache and coalescing provide no benefit. You're adding one network hop of latency (~2 ms).
-- **Single-user interactive use** — the scheduling and coalescing features are designed for concurrent load.
-- **You need true GPU batching** — Ollama processes one request at a time. The engine dispatches concurrently, but Ollama serialises execution. Measured concurrent speedup is 1.15–1.17× (model loading amortisation), not the 2–4× that true batching provides.
+## Prerequisites
+
+- Python 3.11+
+- A running [vLLM](https://github.com/vllm-project/vllm) instance (GPU recommended)
+- A running [Redis](https://redis.io) 7+ instance
+
+---
+
+## Installation
+
+```bash
+git clone <repo>
+cd llm-inference-optimization-engine
+pip install -e .
+```
+
+Development dependencies (testing, linting, type checking):
+
+```bash
+pip install -e ".[dev]"
+```
+
+---
 
 ## Running the Engine
 
-### Standalone
+### Direct
 
 ```bash
-pip install -e .
 uvicorn llm_inference_engine.api.server:app --host 0.0.0.0 --port 8000
 ```
 
-### Docker
+Override the two most common settings via env vars:
 
 ```bash
+VLLM_URL=http://my-vllm:8080 REDIS_URL=redis://my-redis:6379/0 \
+  uvicorn llm_inference_engine.api.server:app --host 0.0.0.0 --port 8000
+```
+
+### Docker Compose
+
+```bash
+# Set your Hugging Face token and model:
+export HF_TOKEN=hf_...
+export VLLM_MODEL=mistralai/Mistral-7B-Instruct-v0.2
+
 docker compose up --build
 ```
 
-The compose file starts Ollama, waits for its health check, then starts the engine. Config is mounted from `./configs/`.
+The compose file starts three services:
+- **redis** — Redis 7 Alpine with a `redis-cli ping` health check
+- **vllm** — vLLM OpenAI server (requires NVIDIA GPU on the host)
+- **engine** — this engine, starts after both dependencies are healthy
 
-### Verify
+The engine is available on `http://localhost:8000`.
 
-```bash
-curl http://localhost:8000/health
-# {"status": "healthy", "ollama_connected": true, ...}
+---
+
+## Configuration
+
+All configuration lives in `configs/default.yaml`. Edit it directly or mount a custom file via Docker. The two env var overrides (`VLLM_URL`, `REDIS_URL`) take precedence over the file.
+
+### vLLM (`vllm`)
+
+```yaml
+vllm:
+  instances:
+    - url: "http://localhost:8080"
+    # Add more instances for a multi-GPU pool:
+    # - url: "http://vllm-2:8080"
+  timeout_seconds: 120        # increase for very long generations
+  retry_count: 2              # transient network retries per request
+  retry_backoff_seconds: 0.5
+  health_check_interval_seconds: 15
 ```
 
-## Configuration Tuning
+**Multi-instance pools:** Add entries to `instances`. Requests are distributed round-robin; open-circuit backends are skipped automatically.
 
-Edit `configs/default.yaml`. Key parameters:
+### Redis (`redis`)
 
-### Cache
-
-| Parameter | Default | Effect |
-|-----------|---------|--------|
-| `cache.enabled` | `true` | Toggle caching entirely |
-| `cache.max_size` | `256` | Max LRU entries. Increase for workloads with many distinct prompts. |
-| `cache.ttl_seconds` | `300` | Time-to-live. Lower for rapidly changing information. |
-| `cache.mode` | `exact` | `exact` (string match) or `semantic` (embedding similarity) |
-
-### Scheduling
-
-| Parameter | Default | Effect |
-|-----------|---------|--------|
-| `scheduling.policy` | `fcfs` | `fcfs`, `sjf`, `priority`, or `token_budget` |
-| `scheduling.max_requests_per_batch` | `8` | Max requests dispatched per drain cycle |
-| `scheduling.drain_delay_seconds` | `0.05` | Pause between drain cycles. Lower = more responsive, higher = better batching. |
-
-**Policy recommendations:**
-- `fcfs` — fair and predictable, good default
-- `sjf` — optimises average latency when prompt lengths vary significantly
-- `priority` — when some requests genuinely matter more
-- `token_budget` — pack short requests together to maximise throughput
-
-### Memory
-
-| Parameter | Default | Effect |
-|-----------|---------|--------|
-| `memory.limit_gb` | `14.0` | Hard memory cap. Set to ~80% of available RAM. |
-| `memory.safety_margin` | `1.1` | Multiplier on estimates (1.1 = +10%). Increase if OOM occurs. |
-
-### Ollama Connection
-
-| Parameter | Default | Effect |
-|-----------|---------|--------|
-| `ollama.host` | `localhost` | Ollama hostname. Override with `OLLAMA_HOST` env var. |
-| `ollama.port` | `11434` | Ollama port. Override with `OLLAMA_PORT` env var. |
-| `ollama.timeout_seconds` | `300` | Max wait for a single inference call |
-| `ollama.retry_count` | `3` | Retries on transient failures |
-
-## Model Considerations
-
-The engine works with any model Ollama has pulled. Considerations:
-
-- **Small models** (phi3, gemma:2b) — fast TTFT (~260 ms), low memory, good for high-throughput workloads
-- **Large models** (llama3.1:8b, deepseek-r1:8b) — slower TTFT (~1.5s), better quality, benefit more from caching
-- **Quantised models** — lower memory footprint allows more headroom for the memory throttler
-
-Pull models before starting the engine:
-
-```bash
-ollama pull llama3.1:8b
-ollama pull phi3
+```yaml
+redis:
+  url: "redis://localhost:6379/0"
+  socket_timeout_seconds: 5.0
 ```
 
-## Monitoring
+### Cache (`cache`)
 
-### Health Check
-
-```bash
-curl http://localhost:8000/health
+```yaml
+cache:
+  enabled: true
+  max_size: 256       # LRU eviction threshold; increase for more cache hits
+  ttl_seconds: 300    # set to 0 to disable expiry (not recommended)
 ```
 
-Returns Ollama connectivity, circuit breaker state, and queue depth.
+Cache keys encode `model + prompt + max_tokens + temperature`. Two requests for the same prompt with different `temperature` values are treated as distinct.
 
-### JSON Metrics
+**Tuning:** For read-heavy workloads (FAQ bots, batch re-runs), set `max_size` higher (e.g. 1024–4096). For creative or unique prompts, a smaller cache reduces Redis memory with little benefit.
 
-```bash
-curl http://localhost:8000/metrics
+### Admission Control (`admission_control`)
+
+```yaml
+admission_control:
+  enabled: true
+  soft_limit: 0.70    # queue requests above 70% KV-cache usage
+  hard_limit: 0.90    # reject requests above 90% KV-cache usage
+  poll_interval_seconds: 5.0
 ```
 
-Returns cache hit/miss counts, total requests, active model sessions, memory usage.
+The throttler polls `vllm:kv_cache_usage_perc` from the vLLM `/metrics` endpoint. Between `soft_limit` and `hard_limit`, requests are queued (awaited in an asyncio loop). Above `hard_limit`, requests are rejected with HTTP 429.
 
-### Prometheus
+**Tuning:**
+- Lower `soft_limit` (e.g. 0.60) to queue earlier and smooth burst traffic.
+- Raise `hard_limit` (e.g. 0.95) if 429s are too frequent and your workload is bursty.
+- Reduce `poll_interval_seconds` for faster reaction to pressure spikes.
 
-```bash
-curl http://localhost:8000/metrics/prometheus
+### Model Registry (`model_registry`)
+
+```yaml
+model_registry:
+  fast_model: "mistralai/Mistral-7B-Instruct-v0.2"
+  large_model: "meta-llama/Meta-Llama-3-70B-Instruct"
+  fast_model_token_threshold: 512
+  fallback_model: "mistralai/Mistral-7B-Instruct-v0.2"
+  fallback_cache_similarity_threshold: 0.75
 ```
 
-Returns metrics in Prometheus text format. Scrape this endpoint with Prometheus or compatible collectors.
+Routing rules:
+1. If the request sets `model`, that model is used as-is (no routing).
+2. If `estimate_prompt_tokens(prompt) < fast_model_token_threshold`, use `fast_model`.
+3. Otherwise use `large_model`.
 
-Key metrics:
-- `llm_request_duration_seconds` — request latency histogram
-- `llm_tokens_generated_total` — total tokens produced
-- `llm_cache_hits_total` / `llm_cache_misses_total` — cache effectiveness
+**Tuning:** Adjust `fast_model_token_threshold` based on your token distribution. Set both `fast_model` and `large_model` to the same value to disable routing.
+
+### Circuit Breaker (`circuit_breaker`)
+
+```yaml
+circuit_breaker:
+  failure_threshold: 5    # consecutive failures before opening
+  cooldown_seconds: 30    # how long to wait before probing again
+```
+
+### Authentication (`auth`)
+
+```yaml
+auth:
+  enabled: false
+  api_keys: []
+```
+
+When `enabled: true`, every request must include `Authorization: Bearer <key>`. Keys are matched against `api_keys`. Requests without a valid key receive HTTP 401.
+
+---
 
 ## Troubleshooting
 
-| Symptom | Cause | Fix |
-|---------|-------|-----|
-| `/health` returns `ollama_connected: false` | Ollama not running or wrong host/port | Start Ollama, check `OLLAMA_HOST`/`OLLAMA_PORT` |
-| Requests rejected with 429 | Memory throttler is rejecting | Increase `memory.limit_gb` or reduce concurrent load |
-| Circuit breaker is open | Backend failed repeatedly | Wait for cooldown period, check Ollama logs |
-| High latency despite caching | Low cache hit rate | Check `cache.max_size` and `cache.ttl_seconds` |
-| OOM kills | Memory estimates too low | Increase `memory.safety_margin`, decrease `memory.limit_gb` |
+### HTTP 429 Too Many Requests
+
+The throttler is rejecting requests because `vllm:kv_cache_usage_perc >= hard_limit`. Options:
+- Increase `admission_control.hard_limit` (e.g. 0.95).
+- Reduce request concurrency from the client.
+- Add more vLLM instances (scale horizontally).
+
+### HTTP 503 Service Unavailable
+
+All backends have open circuit breakers and the fallback chain was exhausted. Check:
+- `GET /health` — inspect `details.healthy_backends`.
+- `GET /metrics` — check `healthy_backends`.
+- vLLM logs for OOM or crash.
+
+### Cache Not Hitting
+
+- Verify `cache.enabled: true`.
+- Ensure `temperature` and `max_tokens` match across requests (they are part of the cache key).
+- Check `GET /metrics` — `cache_hits` should increase with repeated identical requests.
+
+### High Latency on Cache Hits
+
+Redis round-trip should be well under 5 ms on localhost. If cache hit latency is high:
+- Check Redis host is on the same network as the engine.
+- Increase `redis.socket_timeout_seconds` if the connection is flaky.
+
+### Coalescer Not Deduplicating
+
+The coalescer only deduplicates requests with the same `model` and `prompt`. Ensure:
+- `model` is identical (including routing — let the engine route, don't set it explicitly per request if using auto-routing).
+- Redis is reachable from all engine workers.
+
+---
+
+## Multiple Workers
+
+The engine is designed to run with multiple Uvicorn workers (`--workers N`). All workers share Redis for cache and coalescing. The backend pool is created per-process (each worker has its own `BackendPool` instance pointing to the same vLLM URLs).
+
+```bash
+uvicorn llm_inference_engine.api.server:app \
+  --host 0.0.0.0 --port 8000 --workers 4
+```
+
+---
+
+## Testing
+
+```bash
+# Unit tests
+python3 -m pytest tests/unit/ -q
+
+# With coverage
+python3 -m pytest tests/unit/ --cov=llm_inference_engine --cov-report=term-missing
+
+# Single module
+python3 -m pytest tests/unit/api/test_cache.py -v
+```
+

@@ -1,130 +1,65 @@
 # Integration Guide
 
-## API Reference
+## Base URL
 
-Base URL: `http://localhost:8000` (default)
-
-### Authentication
-
-Authentication is optional. When enabled, pass your API key as a Bearer token:
-
-```bash
-curl http://localhost:8000/completions \
-  -H "Authorization: Bearer your-api-key" \
-  -H "Content-Type: application/json" \
-  -d '{"model": "llama3.1:8b", "prompt": "Hello"}'
-```
-
-Unauthenticated requests receive `401 Unauthorized` when auth is enabled.
+All examples assume the engine is running at `http://localhost:8000`.
 
 ---
 
-### POST /completions
+## Authentication
 
-Generate a text completion.
+If `auth.enabled: true` in config, every request must include a Bearer token:
 
-**Request:**
+```
+Authorization: Bearer <api_key>
+```
+
+Requests without a valid key receive:
 
 ```json
-{
-  "model": "llama3.1:8b",
-  "prompt": "Explain quicksort in one paragraph",
-  "max_tokens": 256,
-  "temperature": 0.7,
-  "stream": false
-}
+{"detail": "Unauthorized"}
 ```
-
-| Field | Type | Required | Default | Description |
-|-------|------|----------|---------|-------------|
-| `model` | string | yes | — | Ollama model name |
-| `prompt` | string | yes | — | Input text |
-| `max_tokens` | int | no | 256 | Maximum tokens to generate |
-| `temperature` | float | no | 0.7 | Sampling temperature (0.0–2.0) |
-| `stream` | bool | no | false | Enable SSE streaming |
-
-**Response (non-streaming):**
-
-```json
-{
-  "text": "Quicksort is a divide-and-conquer algorithm...",
-  "model": "llama3.1:8b",
-  "tokens_generated": 87,
-  "processing_time": 2.41
-}
-```
-
-**Response (streaming):**
-
-```
-data: {"text": "Quick", "done": false}
-data: {"text": "sort", "done": false}
-data: {"text": " is", "done": false}
-...
-data: {"text": "", "done": true, "tokens_generated": 87, "processing_time": 2.41}
-```
-
-Each SSE event is a JSON object. The final event has `"done": true` with summary fields.
+HTTP 401.
 
 ---
 
-### POST /chat/completions
-
-Generate a chat completion with message history.
-
-**Request:**
-
-```json
-{
-  "model": "llama3.1:8b",
-  "messages": [
-    {"role": "system", "content": "You are a helpful assistant."},
-    {"role": "user", "content": "What is 2+2?"}
-  ],
-  "max_tokens": 128,
-  "temperature": 0.7,
-  "stream": false
-}
-```
-
-| Field | Type | Required | Default | Description |
-|-------|------|----------|---------|-------------|
-| `model` | string | yes | — | Ollama model name |
-| `messages` | array | yes | — | Array of `{role, content}` objects |
-| `max_tokens` | int | no | 256 | Maximum tokens to generate |
-| `temperature` | float | no | 0.7 | Sampling temperature |
-| `stream` | bool | no | false | Enable SSE streaming |
-
-**Response:** Same format as `/completions`.
-
----
+## Endpoints
 
 ### GET /health
 
-**Response:**
+Liveness and readiness check.
+
+**Response 200:**
 
 ```json
 {
-  "status": "healthy",
-  "ollama_connected": true,
-  "circuit_breaker_state": "closed",
-  "queue_depth": 0
+  "status": "ok",
+  "backend_available": true,
+  "version": "0.2.0",
+  "details": {
+    "healthy_backends": 2
+  }
 }
 ```
+
+`backend_available` is `true` when at least one backend in the pool has a closed or half-open circuit.
 
 ---
 
 ### GET /metrics
 
-**Response:**
+JSON snapshot of current engine state.
+
+**Response 200:**
 
 ```json
 {
-  "cache_hits": 142,
-  "cache_misses": 58,
-  "total_requests": 200,
-  "active_models": ["llama3.1:8b"],
-  "memory_usage_gb": 4.2
+  "kv_cache_usage": 0.42,
+  "active_requests": 3,
+  "healthy_backends": 2,
+  "cache_hits": 1500,
+  "cache_misses": 300,
+  "total_requests": 1800
 }
 ```
 
@@ -132,157 +67,285 @@ Generate a chat completion with message history.
 
 ### GET /metrics/prometheus
 
-Returns metrics in Prometheus exposition format:
+Prometheus-format metrics for scraping. Returns `text/plain; version=0.0.4`.
 
 ```
-# HELP llm_request_duration_seconds Request processing duration
-# TYPE llm_request_duration_seconds histogram
-llm_request_duration_seconds_bucket{le="0.1"} 142
+# HELP llm_engine_requests_total Total requests
+# TYPE llm_engine_requests_total counter
+llm_engine_requests_total{status="success"} 1800.0
+llm_engine_kv_cache_usage 0.42
+llm_engine_healthy_backends 2.0
 ...
 ```
 
-## Error Handling
+---
 
-| Status | Meaning | When |
-|--------|---------|------|
-| `200` | Success | Request completed |
-| `400` | Bad Request | Invalid model name, missing required fields |
-| `401` | Unauthorized | Auth enabled and no/invalid Bearer token |
-| `429` | Too Many Requests | Memory throttler rejected the request |
-| `503` | Service Unavailable | Circuit breaker is open or Ollama unreachable |
-| `500` | Internal Error | Unexpected failure during inference |
+### POST /completions
 
-Error responses include a JSON body:
+OpenAI-compatible text completion.
+
+**Request:**
 
 ```json
 {
-  "detail": "Circuit breaker is open — backend unavailable"
+  "model": "mistralai/Mistral-7B-Instruct-v0.2",
+  "prompt": "Explain quicksort in one paragraph.",
+  "max_tokens": 256,
+  "temperature": 0.7,
+  "top_p": 0.9,
+  "stop": [],
+  "stream": false,
+  "priority": 0,
+  "timeout_seconds": null
 }
 ```
 
-## Streaming Integration
+| Field | Type | Default | Description |
+|-------|------|---------|-------------|
+| `model` | string | required | vLLM model ID. Empty string triggers automatic model routing. |
+| `prompt` | string | required | Text prompt. Must not be empty. |
+| `max_tokens` | int | `256` | Max tokens to generate (1–32768). |
+| `temperature` | float | `0.7` | Sampling temperature (0.0–2.0). |
+| `top_p` | float | `0.9` | Top-p nucleus sampling (0.0–1.0). |
+| `stop` | list[string] | `[]` | Stop sequences. |
+| `stream` | bool | `false` | Stream tokens via SSE. |
+| `priority` | int | `0` | Request priority 0–10 (informational; not used for scheduling). |
+| `timeout_seconds` | float\|null | `null` | Per-request timeout (1–600 s). |
 
-### Python (httpx)
+**Response 200:**
+
+```json
+{
+  "id": "req-a1b2c3",
+  "object": "text_completion",
+  "model": "mistralai/Mistral-7B-Instruct-v0.2",
+  "choices": [
+    {
+      "index": 0,
+      "text": "Quicksort is a divide-and-conquer algorithm...",
+      "finish_reason": "stop"
+    }
+  ],
+  "usage": {
+    "prompt_tokens": 10,
+    "completion_tokens": 87,
+    "total_tokens": 97
+  },
+  "latency_ms": 342.1
+}
+```
+
+---
+
+### POST /chat/completions
+
+OpenAI-compatible chat completion.
+
+**Request:**
+
+```json
+{
+  "model": "mistralai/Mistral-7B-Instruct-v0.2",
+  "messages": [
+    {"role": "system", "content": "You are a helpful assistant."},
+    {"role": "user", "content": "Explain quicksort."}
+  ],
+  "max_tokens": 256,
+  "temperature": 0.7,
+  "top_p": 0.9,
+  "stop": [],
+  "stream": false,
+  "priority": 0,
+  "timeout_seconds": null
+}
+```
+
+`messages` is a list of `{"role": "system"|"user"|"assistant", "content": "..."}`. Must contain at least one message.
+
+**Response 200:**
+
+```json
+{
+  "id": "req-d4e5f6",
+  "object": "chat.completion",
+  "model": "mistralai/Mistral-7B-Instruct-v0.2",
+  "choices": [
+    {
+      "index": 0,
+      "message": {
+        "role": "assistant",
+        "content": "Quicksort is a divide-and-conquer algorithm..."
+      },
+      "finish_reason": "stop"
+    }
+  ],
+  "usage": {
+    "prompt_tokens": 22,
+    "completion_tokens": 87,
+    "total_tokens": 109
+  },
+  "latency_ms": 398.5
+}
+```
+
+---
+
+## Streaming
+
+Set `"stream": true` to receive tokens as Server-Sent Events. The response content type is `text/event-stream`.
+
+Each event is a JSON object followed by `\n\n`:
+
+```
+data: {"id":"req-a1b2c3","choices":[{"index":0,"text":"Quick","finish_reason":null}]}
+
+data: {"id":"req-a1b2c3","choices":[{"index":0,"text":"sort","finish_reason":null}]}
+
+data: {"id":"req-a1b2c3","choices":[{"index":0,"text":" is","finish_reason":null}]}
+
+data: [DONE]
+```
+
+The final `data: [DONE]` signals end of stream.
+
+**Caching note:** Streaming responses are not cached. The cache and coalescer are only applied to non-streaming requests.
+
+### curl example
+
+```bash
+curl http://localhost:8000/completions \
+  -H "Content-Type: application/json" \
+  -d '{"model": "mistralai/Mistral-7B-Instruct-v0.2", "prompt": "Tell me a story", "stream": true}' \
+  --no-buffer
+```
+
+### Python example
 
 ```python
 import httpx
 
-with httpx.stream("POST", "http://localhost:8000/completions", json={
-    "model": "llama3.1:8b",
-    "prompt": "Write a haiku about coding",
-    "stream": True
-}) as response:
-    for line in response.iter_lines():
-        if line.startswith("data: "):
-            print(line[6:])
+with httpx.stream(
+    "POST",
+    "http://localhost:8000/completions",
+    json={"model": "mistralai/Mistral-7B-Instruct-v0.2", "prompt": "Tell me a story", "stream": True},
+    timeout=120,
+) as r:
+    for line in r.iter_lines():
+        if line.startswith("data: ") and line != "data: [DONE]":
+            chunk = json.loads(line[6:])
+            print(chunk["choices"][0]["text"], end="", flush=True)
 ```
 
-### JavaScript (fetch)
+---
 
-```javascript
-const response = await fetch("http://localhost:8000/completions", {
-  method: "POST",
-  headers: { "Content-Type": "application/json" },
-  body: JSON.stringify({
-    model: "llama3.1:8b",
-    prompt: "Write a haiku about coding",
-    stream: true,
-  }),
-});
+## Model Routing
 
-const reader = response.body.getReader();
-const decoder = new TextDecoder();
+If you leave `model` empty (or rely on the engine to route), the engine applies the following rules automatically:
 
-while (true) {
-  const { done, value } = await reader.read();
-  if (done) break;
-  const text = decoder.decode(value);
-  for (const line of text.split("\n")) {
-    if (line.startsWith("data: ")) {
-      const data = JSON.parse(line.slice(6));
-      process.stdout.write(data.text || "");
-    }
-  }
+1. `estimate_prompt_tokens(prompt) < fast_model_token_threshold` → `fast_model`
+2. Otherwise → `large_model`
+
+To opt out of routing and target a specific model, set `model` explicitly.
+
+---
+
+## Error Responses
+
+All errors return a JSON body:
+
+```json
+{
+  "error": "short description",
+  "detail": "longer explanation",
+  "request_id": "req-a1b2c3"
 }
 ```
 
-### curl
+| Status | Cause |
+|--------|-------|
+| `400` | Invalid request (empty prompt, bad role, etc.) |
+| `401` | Missing or invalid Bearer token |
+| `422` | Pydantic validation failure (field type/range error) |
+| `429` | KV-cache above `hard_limit`; retry after a moment |
+| `500` | Unexpected server error |
+| `503` | All backends down and fallback chain exhausted |
 
-```bash
-curl -N http://localhost:8000/completions \
-  -H "Content-Type: application/json" \
-  -d '{"model": "llama3.1:8b", "prompt": "Write a haiku", "stream": true}'
-```
-
-The `-N` flag disables buffering for real-time output.
+---
 
 ## Docker Deployment
 
-### docker-compose (recommended)
+### docker-compose.yml overview
 
-```bash
-docker compose up --build
+```yaml
+services:
+  redis:    # Redis 7 Alpine, port 6379
+  vllm:     # vLLM OpenAI server, port 8080 (requires NVIDIA GPU)
+  engine:   # This engine, port 8000
 ```
 
-This starts:
-- **Ollama** on port 11434 with a health check
-- **Engine** on port 8000, depends on Ollama health
+The engine container reads env vars `VLLM_URL` and `REDIS_URL` which are injected by compose.
 
-### Standalone Docker
+### Bring up the stack
 
 ```bash
-docker build -t llm-engine .
-docker run -p 8000:8000 \
-  -e OLLAMA_HOST=host.docker.internal \
-  llm-engine
+export HF_TOKEN=hf_...
+export VLLM_MODEL=mistralai/Mistral-7B-Instruct-v0.2
+
+docker compose up --build -d
+docker compose logs -f engine
 ```
 
-Use `host.docker.internal` when Ollama runs on the host machine outside Docker.
+### Custom config
 
-### Configuration in Docker
+Mount a custom config file:
 
-The compose file mounts `./configs/` read-only into the container. Edit `configs/default.yaml` on the host and restart the container to apply changes.
+```yaml
+# in docker-compose.yml, under engine:
+volumes:
+  - ./my-configs:/app/configs:ro
+```
 
-Environment variable overrides:
-- `OLLAMA_HOST` — Ollama hostname (default: `localhost`)
-- `OLLAMA_PORT` — Ollama port (default: `11434`)
+### Running vLLM separately
 
-## Ollama Model Management
-
-### Pulling Models
+Comment out the `vllm:` service and set `VLLM_URL` to your existing vLLM endpoint:
 
 ```bash
-ollama pull llama3.1:8b
-ollama pull phi3
-ollama pull gemma:2b
+VLLM_URL=http://192.168.1.50:8080 docker compose up engine redis
 ```
 
-### Listing Available Models
+### Multi-instance pool
 
-```bash
-ollama list
+To run multiple vLLM instances, add them to `configs/default.yaml`:
+
+```yaml
+vllm:
+  instances:
+    - url: "http://vllm-1:8080"
+    - url: "http://vllm-2:8080"
+    - url: "http://vllm-3:8080"
 ```
 
-### Model Memory Requirements
+And add corresponding services in `docker-compose.yml`.
 
-| Model | Parameters | Quantisation | Approximate RAM |
-|-------|-----------|-------------|-----------------|
-| phi3 | 3.8B | Q4_K_M | ~2.5 GB |
-| gemma:2b | 2B | Q4_K_M | ~1.8 GB |
-| llama3.1:8b | 8B | Q4_K_M | ~5.0 GB |
-| deepseek-r1:8b | 8B | Q4_K_M | ~5.0 GB |
+---
 
-Set `memory.limit_gb` in config to at least the size of your largest model plus 2 GB headroom.
+## OpenAI SDK Compatibility
 
-### Quantisation Levels
+The engine implements the same paths and response shapes as the OpenAI API. You can point the OpenAI Python SDK at it:
 
-Lower quantisation = less RAM, slightly lower quality:
+```python
+from openai import OpenAI
 
-| Level | Bits | Quality | Speed |
-|-------|------|---------|-------|
-| Q4_K_M | 4-bit | Good | Fast |
-| Q5_K_M | 5-bit | Better | Moderate |
-| Q6_K | 6-bit | High | Slower |
-| Q8_0 | 8-bit | Near-original | Slowest |
+client = OpenAI(
+    base_url="http://localhost:8000",
+    api_key="your-key-if-auth-enabled",
+)
 
-Most Ollama models default to Q4_K_M, which is a good balance for this engine's use case.
+response = client.completions.create(
+    model="mistralai/Mistral-7B-Instruct-v0.2",
+    prompt="Explain quicksort",
+    max_tokens=256,
+)
+print(response.choices[0].text)
+```
+

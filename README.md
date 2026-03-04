@@ -1,13 +1,13 @@
 # LLM Inference Optimization Engine
 
-Request scheduling, caching, streaming, and inference orchestration middleware for [Ollama](https://ollama.com).
+OpenAI-compatible inference middleware for [vLLM](https://github.com/vllm-project/vllm).
 
-Sits between your application and Ollama. Incoming requests are checked against a case-insensitive response cache, queued by a configurable scheduling policy, dispatched to the backend, and streamed back via SSE or returned as a complete JSON response.
+Sits between your application and one or more vLLM instances. Each request flows through Redis-backed response caching, cross-worker request coalescing, token-count-based model routing, and KV-cache-pressure-aware admission control before being dispatched to the backend pool.
 
 ## Quick Start
 
 ```bash
-# Prerequisites: Python 3.11+, Ollama running on localhost:11434
+# Prerequisites: Python 3.11+, vLLM on localhost:8080, Redis on localhost:6379
 pip install -e .
 uvicorn llm_inference_engine.api.server:app --host 0.0.0.0 --port 8000
 ```
@@ -16,53 +16,60 @@ uvicorn llm_inference_engine.api.server:app --host 0.0.0.0 --port 8000
 # Text completion
 curl http://localhost:8000/completions \
   -H "Content-Type: application/json" \
-  -d '{"model": "llama3.1:8b", "prompt": "Explain quicksort", "max_tokens": 128}'
+  -d '{"model": "mistralai/Mistral-7B-Instruct-v0.2", "prompt": "Explain quicksort", "max_tokens": 128}'
 
-# Streaming
-curl http://localhost:8000/completions \
+# Chat completion (streaming)
+curl http://localhost:8000/chat/completions \
   -H "Content-Type: application/json" \
-  -d '{"model": "llama3.1:8b", "prompt": "Explain quicksort", "max_tokens": 128, "stream": true}'
+  -d '{"model": "mistralai/Mistral-7B-Instruct-v0.2", "messages": [{"role": "user", "content": "Explain quicksort"}], "stream": true}'
 ```
 
 ## Architecture
 
 ```
-┌─────────────┐     ┌─────────────────────────────────────────────┐     ┌────────┐
-│ Application │────▶│  LLM Inference Optimization Engine          │────▶│ Ollama │
-│             │◀────│  Cache → Throttler → Scheduler → Dispatch   │◀────│        │
-└─────────────┘     └─────────────────────────────────────────────┘     └────────┘
+┌─────────────┐     ┌──────────────────────────────────────────────────────────────┐     ┌────────────┐
+│ Application │────▶│  LLM Inference Optimization Engine                           │────▶│  vLLM(s)   │
+│             │◀────│  ModelRouter → Cache → Coalescer → Throttler → BackendPool   │◀────│            │
+└─────────────┘     └──────────────────────────────────────────────────────────────┘     └────────────┘
+                                              │   ▲
+                                              ▼   │
+                                           ┌────────┐
+                                           │ Redis  │
+                                           └────────┘
 ```
 
-| Layer | Components | Purpose |
+| Layer | Component | Purpose |
 |-------|-----------|---------|
 | **API** | FastAPI server, Pydantic models | OpenAI-compatible HTTP endpoints |
-| **Cache** | ExactMatchCache, EmbeddingCache | Case-insensitive response caching with TTL + LRU |
-| **Scheduling** | Scheduler, Policies, RequestQueue | Per-model queuing with FCFS/SJF/Priority/TokenBudget |
-| **Optimization** | AdaptiveThrottler, MemoryEstimator | Memory-aware admission control |
-| **Reliability** | CircuitBreaker, Coalescer | Failure isolation and request deduplication |
-| **Integration** | OllamaClient, InferenceBackend ABC | Async Ollama communication with retry + backoff |
+| **Routing** | ModelRouter, FallbackRouter | Token-count-based fast/large model selection; stale-cache fallback |
+| **Cache** | RedisCache | Redis-backed LRU response cache with TTL |
+| **Coalescing** | RequestCoalescer | Cross-worker deduplication via Redis SET NX + pub/sub |
+| **Admission** | AdaptiveThrottler | ACCEPT / QUEUE / REJECT based on live `vllm:kv_cache_usage_perc` |
+| **Reliability** | BackendPool, CircuitBreaker | Round-robin pool with per-backend circuit breaker |
+| **Integration** | VLLMBackend | Async httpx client targeting vLLM's OpenAI-compatible API |
 
-See [docs/architecture.md](docs/architecture.md) for component details and request lifecycle.
+See [docs/architecture.md](docs/architecture.md) for component details and the full request lifecycle.
 
 ## Features
 
-- **OpenAI-compatible API** — `/completions` and `/chat/completions` with the same request/response format
-- **SSE streaming** — real-time token-by-token delivery with `stream: true`
-- **Response caching** — case-insensitive key normalisation, parameter-aware keys include `max_tokens` and `temperature`
-- **Request coalescing** — identical in-flight requests share one backend call
-- **4 scheduling policies** — FCFS, SJF (with starvation guard), Priority, Token Budget
-- **Circuit breaker** — closed → open → half-open pattern isolates backend failures
-- **Memory throttling** — ACCEPT / QUEUE / REJECT admission based on estimated memory pressure
-- **API key authentication** — optional Bearer token validation
-- **Prometheus metrics** — request latency, token throughput, cache hit rate at `/metrics/prometheus`
-- **Docker support** — multi-stage build with docker-compose for Ollama + engine
+- **OpenAI-compatible API** — `/completions` and `/chat/completions` with the same request/response schema used by the OpenAI SDK
+- **SSE streaming** — real-time token-by-token delivery with `"stream": true`
+- **Redis response cache** — LRU eviction + TTL; shared across all workers and replicas
+- **Cross-worker coalescing** — identical concurrent requests share one backend call via Redis pub/sub
+- **Automatic model routing** — short prompts go to the fast model, long prompts to the large model; explicit `model` field overrides routing
+- **KV-cache admission control** — polls `vllm:kv_cache_usage_perc`; queues or rejects when GPU memory is under pressure
+- **Backend pool + circuit breaker** — round-robin across multiple vLLM instances; open circuits are skipped
+- **Fallback chain** — on full pool failure: fallback model → stale cache → 503
+- **Prometheus metrics** — latency histograms, token counters, KV-cache gauge, healthy backend count at `/metrics/prometheus`
+- **API key authentication** — optional Bearer token validation via `auth.enabled`
+- **Docker support** — compose file brings up Redis, vLLM, and the engine with health checks
 
 ## API Endpoints
 
 | Method | Path | Description |
 |--------|------|-------------|
-| `GET` | `/health` | Liveness check — Ollama connectivity, circuit breaker state, queue depth |
-| `GET` | `/metrics` | JSON metrics snapshot — cache stats, request counts, memory usage |
+| `GET` | `/health` | Liveness/readiness — backend availability, version |
+| `GET` | `/metrics` | JSON snapshot — KV-cache usage, healthy backends, cache hit/miss |
 | `GET` | `/metrics/prometheus` | Prometheus-format metrics for scraping |
 | `POST` | `/completions` | Text completion (streaming or non-streaming) |
 | `POST` | `/chat/completions` | Chat completion with message history (streaming or non-streaming) |
@@ -71,77 +78,58 @@ See [docs/integration_guide.md](docs/integration_guide.md) for full API referenc
 
 ## Configuration
 
-The engine reads `configs/default.yaml` and supports env var overrides (`OLLAMA_HOST`, `OLLAMA_PORT`).
+The engine reads `configs/default.yaml`. Two env vars override the most common deployment settings:
+
+| Variable | Default | Purpose |
+|----------|---------|---------|
+| `VLLM_URL` | `http://localhost:8080` | vLLM base URL (overrides `vllm.instances[0].url`) |
+| `REDIS_URL` | `redis://localhost:6379/0` | Redis connection URL |
 
 ```yaml
-ollama:
-  host: localhost
-  port: 11434
-  timeout_seconds: 300
-  retry_count: 3
+vllm:
+  instances:
+    - url: "http://localhost:8080"   # add more for multi-instance pools
+  timeout_seconds: 120
+  retry_count: 2
 
-server:
-  host: "0.0.0.0"
-  port: 8000
-  workers: 4
-  log_level: INFO
+redis:
+  url: "redis://localhost:6379/0"
 
 cache:
   enabled: true
-  max_size: 256         # LRU entries
-  ttl_seconds: 300      # 5-minute TTL
-  mode: exact           # exact | semantic
+  max_size: 256       # LRU eviction after this many entries
+  ttl_seconds: 300.0  # entries older than this are treated as misses
 
-scheduling:
-  policy: fcfs           # fcfs | sjf | priority | token_budget
-  max_requests_per_batch: 8
-  max_tokens_per_batch: 0  # 0 = unlimited
-  drain_delay_seconds: 0.05
+admission_control:
+  soft_limit: 0.70    # QUEUE above this KV-cache fraction
+  hard_limit: 0.90    # REJECT above this KV-cache fraction
 
-memory:
-  limit_gb: 14.0        # hard memory cap
-  safety_margin: 1.1    # +10% over estimates
+model_registry:
+  fast_model: "mistralai/Mistral-7B-Instruct-v0.2"
+  large_model: "meta-llama/Meta-Llama-3-70B-Instruct"
+  fast_model_token_threshold: 512   # prompts shorter than this → fast model
+  fallback_model: "mistralai/Mistral-7B-Instruct-v0.2"
 ```
 
-See [docs/usage_guide.md](docs/usage_guide.md) for tuning recommendations.
+See [docs/usage_guide.md](docs/usage_guide.md) for all options and tuning recommendations.
 
 ## Docker
 
 ```bash
-docker compose up --build
-# Engine on :8000, Ollama on :11434
+# Set your Hugging Face token and model name, then:
+HF_TOKEN=hf_... VLLM_MODEL=mistralai/Mistral-7B-Instruct-v0.2 docker compose up --build
+# Engine on :8000, vLLM on :8080, Redis on :6379
 ```
 
-The compose file runs Ollama with a health check and starts the engine once Ollama is ready. Config is mounted read-only from `./configs/`.
-
-## Performance
-
-Benchmarked on Apple M2 Air (16 GB) with 4 local Ollama models:
-
-| Scenario | Result |
-|----------|--------|
-| Cache hit latency | 1.6–2.8 ms |
-| Streaming TTFT | 261–1549 ms (model-dependent) |
-| Concurrent burst (4 parallel) | 1.15–1.17× vs sequential |
-| Mixed workload (60% cache hit) | 2.15× throughput improvement |
-| Sequential cached throughput | 415–426 req/s |
-
-See [docs/PERFORMANCE_REPORT.md](docs/PERFORMANCE_REPORT.md) for full methodology and per-model numbers.
-
-## Caveats
-
-- **Ollama is single-threaded** — concurrent "batching" is fan-out of individual calls, not true GPU batching. Measured speedup is 1.15–1.17× (model loading amortisation), not the 2–4× that true batching provides.
-- **Memory estimates are heuristic** — the throttler uses a fixed 0.5 GB per-request estimate. Real memory depends on prompt length, model quantisation, and system state.
-- **Cache is in-process** — no persistence across restarts, no shared cache across workers. Use `workers: 1` or accept cold cache on restart.
-- **Single backend** — designed for Ollama. The `InferenceBackend` ABC exists for extensibility but only Ollama is implemented.
+The compose file starts Redis and vLLM with health checks, then starts the engine once both are healthy.
 
 ## Testing
 
 ```bash
 pip install -e ".[dev]"
-python3 -m pytest tests/unit/ --no-cov -q   # 616 tests, ~3 seconds
-ruff check src/ tests/                       # linting
-mypy src/llm_inference_engine --strict       # type checking
+python3 -m pytest tests/unit/ -q          # 234 tests
+ruff check src/ tests/                    # linting
+mypy src/llm_inference_engine --strict    # type checking
 ```
 
 ## Documentation
@@ -149,9 +137,9 @@ mypy src/llm_inference_engine --strict       # type checking
 | Document | Purpose |
 |----------|---------|
 | [Architecture](docs/architecture.md) | Component design, request lifecycle, design decisions |
-| [Usage Guide](docs/usage_guide.md) | When the engine helps, configuration tuning, troubleshooting |
+| [Usage Guide](docs/usage_guide.md) | Configuration reference, tuning, troubleshooting |
 | [Integration Guide](docs/integration_guide.md) | API reference, streaming, error handling, Docker deployment |
-| [Performance Report](docs/PERFORMANCE_REPORT.md) | Benchmark methodology and per-model results |
+| [Performance Report](docs/PERFORMANCE_REPORT.md) | Benchmark methodology and results |
 
 ## Contributing
 
