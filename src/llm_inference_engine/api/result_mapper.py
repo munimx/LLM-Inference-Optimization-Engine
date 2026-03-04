@@ -1,6 +1,7 @@
 """ResultMapper: correlates async Ollama responses with originating requests."""
 
 import asyncio
+import time
 from dataclasses import dataclass, field
 
 import structlog
@@ -15,7 +16,7 @@ class _PendingRequest:
     """Tracks a pending request waiting for its response."""
 
     future: asyncio.Future[Response]
-    created_at: float = field(default_factory=lambda: asyncio.get_event_loop().time())
+    created_at: float = field(default_factory=time.monotonic)
 
 
 class ResultMapper:
@@ -65,7 +66,7 @@ class ResultMapper:
         async with self._lock:
             if request_id in self._pending:
                 raise ValueError(f"Request {request_id!r} is already registered")
-            loop = asyncio.get_event_loop()
+            loop = asyncio.get_running_loop()
             future: asyncio.Future[Response] = loop.create_future()
             self._pending[request_id] = _PendingRequest(future=future)
         logger.debug("result_mapper_registered", request_id=request_id)
