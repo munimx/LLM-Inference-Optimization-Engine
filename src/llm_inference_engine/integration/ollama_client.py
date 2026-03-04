@@ -478,7 +478,7 @@ class OllamaClient:
         assert self._client is not None
         payload: dict[str, Any] = {"model": model, "input": text}
         response = await self._client.post(
-            f"{self.base_url}/api/embed",
+            "/api/embed",
             json=payload,
             timeout=self.timeout,
         )
