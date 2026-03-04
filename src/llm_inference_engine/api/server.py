@@ -4,6 +4,7 @@ Exposes the following endpoints:
 
 - ``GET  /health``               — Liveness/readiness check
 - ``GET  /metrics``              — JSON metrics snapshot
+- ``GET  /metrics/prometheus``   — Prometheus-format metrics
 - ``POST /completions``          — OpenAI-compatible text completion (+ SSE streaming)
 - ``POST /chat/completions``     — OpenAI-compatible chat completion (+ SSE streaming)
 """
@@ -21,12 +22,12 @@ from fastapi import FastAPI, HTTPException, status
 from fastapi.middleware.cors import CORSMiddleware
 from fastapi.responses import StreamingResponse
 
-from llm_inference_engine.api.aggregator import RequestAggregator, dispatch_batch
-from llm_inference_engine.api.cache import SemanticCache
+from llm_inference_engine.api.cache import RedisCache
 from llm_inference_engine.api.circuit_breaker import CircuitBreaker
 from llm_inference_engine.api.coalescer import RequestCoalescer
-from llm_inference_engine.api.dependencies import AggregatorDep, OllamaClientDep, ThrottlerDep
-from llm_inference_engine.api.embedding_cache import EmbeddingCache
+from llm_inference_engine.api.dependencies import PoolDep, ThrottlerDep
+from llm_inference_engine.api.fallback_router import FallbackRouter
+from llm_inference_engine.api.model_router import ModelRouter
 from llm_inference_engine.api.models import (
     ChatCompletionChoice,
     ChatCompletionMessage,
@@ -41,27 +42,28 @@ from llm_inference_engine.api.models import (
     UsageInfo,
 )
 from llm_inference_engine.config import InferenceConfig
-from llm_inference_engine.integration.ollama_client import OllamaClient
+from llm_inference_engine.integration.backend_pool import BackendPool
+from llm_inference_engine.integration.vllm_backend import VLLMBackend
 from llm_inference_engine.metrics.prometheus import (
     ACTIVE_REQUESTS,
     CACHE_HITS,
     CACHE_MISSES,
-    CACHE_SIZE,
-    COMMITTED_MEMORY_GB,
+    HEALTHY_BACKENDS,
+    KV_CACHE_USAGE,
     PROMPT_TOKENS,
     REQUEST_LATENCY,
     REQUESTS_TOTAL,
     TOKENS_GENERATED,
 )
-from llm_inference_engine.optimization.memory import MemoryEstimator
-from llm_inference_engine.optimization.throttler import AdaptiveThrottler
-from llm_inference_engine.scheduling.policies import SchedulingPolicy
-from llm_inference_engine.scheduling.scheduler import Scheduler
+from llm_inference_engine.optimization.throttler import AdaptiveThrottler, AdmissionDecision
 from llm_inference_engine.utils.tokenizer import estimate_prompt_tokens
 
 logger = structlog.get_logger(__name__)
 
-VERSION = "0.1.0"
+VERSION = "0.2.0"
+
+# In-process request counter (approximate — not cross-worker)
+_total_requests: int = 0
 
 
 def create_app(config: InferenceConfig | None = None) -> FastAPI:
@@ -80,95 +82,94 @@ def create_app(config: InferenceConfig | None = None) -> FastAPI:
     @asynccontextmanager
     async def lifespan(app: FastAPI) -> AsyncGenerator[None, None]:
         """Manage application startup and shutdown."""
+        global _total_requests
         logger.info("server_starting", version=VERSION)
 
-        # --- Initialise shared components ---
-        ollama_client = OllamaClient(
-            host=config.ollama.host,
-            port=config.ollama.port,
-            timeout=config.ollama.timeout_seconds,
-            max_retries=config.ollama.retry_count,
-            retry_backoff_seconds=config.ollama.retry_backoff_seconds,
+        # --- Backend pool ---
+        vllm_urls = [inst.url for inst in config.vllm.instances]
+        pool = BackendPool.from_urls(
+            vllm_urls,
+            timeout=config.vllm.timeout_seconds,
+            max_retries=config.vllm.retry_count,
+            retry_backoff_seconds=config.vllm.retry_backoff_seconds,
+            failure_threshold=config.circuit_breaker.failure_threshold,
+            cooldown_seconds=config.circuit_breaker.cooldown_seconds,
         )
-        await ollama_client.connect()
 
-        # Warn if Ollama is unreachable (non-blocking — it may start later in Docker)
-        try:
-            if not await ollama_client.is_available():
-                logger.warning("ollama_unreachable_at_startup",
-                               host=config.ollama.host, port=config.ollama.port)
-        except Exception:
-            logger.warning("ollama_health_check_failed",
-                           host=config.ollama.host, port=config.ollama.port)
+        # Warn if no backends are reachable at startup (non-blocking)
+        available = False
+        for inst in config.vllm.instances:
+            probe = VLLMBackend(inst.url, timeout=config.vllm.timeout_seconds)
+            available = await probe.is_available()
+            await probe.close()
+            if available:
+                break
+        if not available:
+            logger.warning(
+                "vllm_unreachable_at_startup",
+                instances=[inst.url for inst in config.vllm.instances],
+            )
 
-        # Build the cache based on configured mode.
-        cache: Any = None
+        # --- Redis cache ---
+        cache: RedisCache | None = None
         if config.cache.enabled:
-            if config.cache.mode == "semantic":
-                embed_model = config.cache.embedding_model
+            cache = await RedisCache.connect(
+                config.redis.url,
+                max_size=config.cache.max_size,
+                ttl_seconds=config.cache.ttl_seconds,
+            )
 
-                async def _embed(text: str) -> list[float]:
-                    return await ollama_client.embed(embed_model, text)
-
-                cache = EmbeddingCache(
-                    _embed,
-                    max_size=config.cache.max_size,
-                    ttl_seconds=config.cache.ttl_seconds,
-                    similarity_threshold=config.cache.similarity_threshold,
-                )
-            else:
-                cache = SemanticCache(
-                    max_size=config.cache.max_size,
-                    ttl_seconds=config.cache.ttl_seconds,
-                )
-
-        memory_estimator = MemoryEstimator(safety_margin=config.memory.safety_margin)
-        throttler = AdaptiveThrottler(memory_limit_gb=config.memory.limit_gb)
-
-        scheduler = Scheduler(
-            dispatch_fn=lambda batch: dispatch_batch(ollama_client, batch),
-            policy=SchedulingPolicy(config.scheduling.policy),
-            max_requests_per_batch=config.scheduling.max_requests_per_batch,
-            max_tokens_per_batch=config.scheduling.max_tokens_per_batch,
+        # --- Admission throttler ---
+        # Use the first vLLM URL for metrics polling
+        throttler = AdaptiveThrottler(
+            backend_url=vllm_urls[0],
+            soft_limit=config.admission_control.soft_limit,
+            hard_limit=config.admission_control.hard_limit,
+            poll_interval_seconds=config.admission_control.poll_interval_seconds,
         )
+        if config.admission_control.enabled:
+            await throttler.start()
 
-        coalescer = RequestCoalescer()
+        # --- Cross-worker coalescer ---
+        import redis.asyncio as aioredis
+        redis_client = await aioredis.from_url(config.redis.url, decode_responses=True)
+        coalescer = RequestCoalescer(redis_client)
 
-        circuit_breaker = CircuitBreaker(
-            failure_threshold=config.scheduling.circuit_breaker_threshold,
-            cooldown_seconds=config.scheduling.circuit_breaker_cooldown_seconds,
-        )
-
-        aggregator = RequestAggregator(
-            ollama_client=ollama_client,
-            scheduler=scheduler,
+        # --- Model router & fallback router ---
+        model_router = ModelRouter(config.model_registry)
+        fallback_router = FallbackRouter(
+            pool=pool,
+            fallback_model=config.model_registry.fallback_model,
             cache=cache,
-            drain_delay_seconds=config.scheduling.drain_delay_seconds,
-            coalescer=coalescer,
         )
 
         # --- Store in app state for DI ---
-        app.state.ollama_client = ollama_client
-        app.state.scheduler = scheduler
+        app.state.pool = pool
         app.state.cache = cache
-        app.state.aggregator = aggregator
         app.state.throttler = throttler
-        app.state.memory_estimator = memory_estimator
+        app.state.coalescer = coalescer
+        app.state.model_router = model_router
+        app.state.fallback_router = fallback_router
         app.state.config = config
-        app.state.circuit_breaker = circuit_breaker
+        _total_requests = 0
 
         logger.info("server_ready")
         yield
 
         # --- Cleanup ---
-        await ollama_client.close()
+        await throttler.stop()
+        await pool.close()
+        if cache is not None:
+            await cache.close()
+        await redis_client.aclose()
         logger.info("server_stopped")
 
     app = FastAPI(
         title="LLM Inference Optimization Engine",
         description=(
-            "Production-grade inference orchestration layer on top of Ollama, "
-            "optimising throughput and latency on Apple Silicon."
+            "Production-grade inference orchestration layer for vLLM — "
+            "Redis-backed caching, health-aware backend pooling, and "
+            "KV-cache-pressure admission control."
         ),
         version=VERSION,
         lifespan=lifespan,
@@ -178,7 +179,7 @@ def create_app(config: InferenceConfig | None = None) -> FastAPI:
 
     app.add_middleware(
         CORSMiddleware,
-        allow_origins=["*"],  # CORS is not an auth boundary; API-key middleware handles auth
+        allow_origins=["*"],
         allow_methods=["*"],
         allow_headers=["*"],
     )
@@ -194,7 +195,9 @@ def create_app(config: InferenceConfig | None = None) -> FastAPI:
         _valid_keys = frozenset(config.auth.api_keys)
 
         class _APIKeyMiddleware(BaseHTTPMiddleware):
-            async def dispatch(self, request: StarletteRequest, call_next: RequestResponseEndpoint) -> StarletteResponse:
+            async def dispatch(
+                self, request: StarletteRequest, call_next: RequestResponseEndpoint
+            ) -> StarletteResponse:
                 if request.url.path in _public_paths:
                     return await call_next(request)
                 auth_header = request.headers.get("authorization", "")
@@ -214,47 +217,35 @@ def create_app(config: InferenceConfig | None = None) -> FastAPI:
     # ------------------------------------------------------------------
 
     @app.get("/health", response_model=HealthResponse, tags=["System"])
-    async def health(aggregator: AggregatorDep) -> HealthResponse:
+    async def health(pool: PoolDep) -> HealthResponse:
         """Return service health status."""
-        try:
-            ollama_client: OllamaClient = app.state.ollama_client
-            available = await ollama_client.is_available()
-        except Exception:
-            available = False
-
-        cb: CircuitBreaker = app.state.circuit_breaker
-        cb_state = cb.state.value
-        if not available or not cb.is_available:
-            health_status = "degraded"
-        else:
-            health_status = "ok"
-
+        healthy = pool.healthy_count() > 0
+        health_status = "ok" if healthy else "degraded"
         return HealthResponse(
             status=health_status,
-            ollama_available=available,
+            backend_available=healthy,
             version=VERSION,
             details={
-                "pending_requests": aggregator.pending_count,
-                "circuit_breaker": cb_state,
+                "healthy_backends": pool.healthy_count(),
+                "total_backends": len(pool._backends),
             },
         )
 
     @app.get("/metrics", response_model=MetricsResponse, tags=["System"])
     async def metrics(
-        aggregator: AggregatorDep,
+        pool: PoolDep,
         throttler: ThrottlerDep,
     ) -> MetricsResponse:
         """Return a JSON snapshot of runtime metrics."""
         stats = throttler.stats
-        cache: SemanticCache = app.state.cache
+        cache_obj: RedisCache | None = app.state.cache
         return MetricsResponse(
-            committed_memory_gb=stats.committed_gb,
-            available_memory_gb=stats.available_gb,
-            memory_limit_gb=stats.memory_limit_gb,
+            kv_cache_usage=stats.kv_cache_usage,
             active_requests=stats.active_requests,
-            cache_hits=cache.hits,
-            cache_misses=cache.misses,
-            total_requests=aggregator.total_requests,
+            healthy_backends=pool.healthy_count(),
+            cache_hits=cache_obj.hits if cache_obj else 0,
+            cache_misses=cache_obj.misses if cache_obj else 0,
+            total_requests=_total_requests,
         )
 
     @app.get("/metrics/prometheus", tags=["System"])
@@ -262,18 +253,16 @@ def create_app(config: InferenceConfig | None = None) -> FastAPI:
         """Return Prometheus-format metrics for scraping."""
         from prometheus_client import CONTENT_TYPE_LATEST, generate_latest
 
-        # Update gauges from current state
         try:
             throttler_obj: AdaptiveThrottler = app.state.throttler
             stats = throttler_obj.stats
-            COMMITTED_MEMORY_GB.set(stats.committed_gb)
+            KV_CACHE_USAGE.set(stats.kv_cache_usage)
             ACTIVE_REQUESTS.set(stats.active_requests)
         except Exception:
             pass
         try:
-            cache_obj = app.state.cache
-            if cache_obj is not None:
-                CACHE_SIZE.set(cache_obj.size)
+            pool_obj: BackendPool = app.state.pool
+            HEALTHY_BACKENDS.set(pool_obj.healthy_count())
         except Exception:
             pass
 
@@ -283,36 +272,17 @@ def create_app(config: InferenceConfig | None = None) -> FastAPI:
         )
 
     # ------------------------------------------------------------------
-    # Shared admission guards
+    # Admission guard
     # ------------------------------------------------------------------
 
-    # Rough per-request memory estimate (GB) for throttler admission.
-    # Conservative heuristic: ~0.5 GB per concurrent inference request
-    # (accounts for KV-cache overhead on typical 7B models).
-    _REQUEST_MEMORY_ESTIMATE_GB = 0.5
-
-    async def _check_admission(pending: int) -> None:
-        """Reject early if circuit is open, queue is full, or memory exhausted."""
-        cb: CircuitBreaker = app.state.circuit_breaker
-        if not cb.is_available:
-            raise HTTPException(
-                status_code=status.HTTP_503_SERVICE_UNAVAILABLE,
-                detail="Backend unavailable (circuit breaker open)",
-            )
-        max_q = config.scheduling.max_queue_depth
-        if max_q > 0 and pending >= max_q:
-            raise HTTPException(
-                status_code=429,
-                detail=f"Queue full ({pending}/{max_q}). Retry later.",
-            )
-        # Memory-based admission control
+    async def _check_admission() -> None:
+        """Reject early if admission control says REJECT."""
         throttler: AdaptiveThrottler = app.state.throttler
-        from llm_inference_engine.optimization.throttler import AdmissionDecision
-        decision = await throttler.check(_REQUEST_MEMORY_ESTIMATE_GB)
+        decision = throttler.check()
         if decision == AdmissionDecision.REJECT:
             raise HTTPException(
-                status_code=status.HTTP_503_SERVICE_UNAVAILABLE,
-                detail="Memory limit reached. Retry later.",
+                status_code=429,
+                detail="KV cache pressure is too high. Retry later.",
             )
 
     # ------------------------------------------------------------------
@@ -327,103 +297,98 @@ def create_app(config: InferenceConfig | None = None) -> FastAPI:
     )
     async def completions(
         body: CompletionRequest,
-        aggregator: AggregatorDep,
-        ollama_client: OllamaClientDep,
+        pool: PoolDep,
+        throttler: ThrottlerDep,
     ) -> CompletionResponse | StreamingResponse:
         """Generate a text completion for the given prompt."""
-        await _check_admission(aggregator.pending_count)
+        global _total_requests
+        await _check_admission()
+
+        # Resolve target model via router (explicit model in body overrides routing)
+        model_router: ModelRouter = app.state.model_router
+        model = model_router.route(body.prompt, explicit_model=body.model or None)
+
+        cache_obj: RedisCache | None = app.state.cache
+        coalescer: RequestCoalescer = app.state.coalescer
 
         if body.stream:
-            REQUESTS_TOTAL.labels(model=body.model, endpoint="completions", status="stream").inc()
-            cache_for_stream = app.state.cache
-            cb_for_stream: CircuitBreaker = app.state.circuit_breaker
-            throttler_for_stream: AdaptiveThrottler = app.state.throttler
-            stream_req_id = f"cmpl-stream-{uuid.uuid4().hex[:8]}"
-            await throttler_for_stream.reserve(stream_req_id, _REQUEST_MEMORY_ESTIMATE_GB)
+            REQUESTS_TOTAL.labels(model=model, endpoint="completions", status="stream").inc()
+            throttler.increment_active()
             return StreamingResponse(
-                _stream_completion(
-                    ollama_client, body,
-                    cache=cache_for_stream,
-                    circuit_breaker=cb_for_stream,
-                    throttler=throttler_for_stream,
-                    request_id_for_throttler=stream_req_id,
-                    memory_estimate_gb=_REQUEST_MEMORY_ESTIMATE_GB,
-                ),
+                _stream_completion(pool, body, model, cache=cache_obj, throttler=throttler),
                 media_type="text/event-stream",
                 headers={"Cache-Control": "no-cache", "X-Accel-Buffering": "no"},
             )
 
-        timeout = body.timeout_seconds or 300.0
-        request_id = f"cmpl-{uuid.uuid4().hex[:8]}"
-        throttler: AdaptiveThrottler = app.state.throttler
-        await throttler.reserve(request_id, _REQUEST_MEMORY_ESTIMATE_GB)
+        _total_requests += 1
+        throttler.increment_active()
         try:
-            response = await asyncio.wait_for(
-                aggregator.complete(
-                    model=body.model,
-                    prompt=body.prompt,
-                    max_tokens=body.max_tokens,
-                    temperature=body.temperature,
-                    top_p=body.top_p,
-                    stop=body.stop,
-                    priority=body.priority,
-                ),
-                timeout=timeout,
-            )
-        except TimeoutError as exc:
-            await throttler.release(request_id, _REQUEST_MEMORY_ESTIMATE_GB)
-            REQUESTS_TOTAL.labels(model=body.model, endpoint="completions", status="timeout").inc()
-            raise HTTPException(
-                status_code=status.HTTP_504_GATEWAY_TIMEOUT,
-                detail=f"Request timed out after {timeout}s",
-            ) from exc
-        await throttler.release(request_id, _REQUEST_MEMORY_ESTIMATE_GB)
+            async def _do_generate() -> Any:
+                backend = pool.get_healthy_backend()
+                if backend is None:
+                    fallback: FallbackRouter = app.state.fallback_router
+                    return await fallback.route(
+                        model, body.prompt,
+                        max_tokens=body.max_tokens,
+                        temperature=body.temperature,
+                        top_p=body.top_p,
+                        stop=body.stop or None,
+                    )
+                try:
+                    result = await backend.generate(
+                        model, body.prompt,
+                        max_tokens=body.max_tokens,
+                        temperature=body.temperature,
+                        top_p=body.top_p,
+                        stop=body.stop or None,
+                    )
+                    pool.record_success(backend)
+                    return result
+                except Exception as exc:
+                    pool.record_failure(backend)
+                    raise exc
 
-        cb: CircuitBreaker = app.state.circuit_breaker
-        if response.result is None:
-            cb.record_failure()
-            REQUESTS_TOTAL.labels(model=body.model, endpoint="completions", status="error").inc()
-            raise HTTPException(
-                status_code=status.HTTP_503_SERVICE_UNAVAILABLE,
-                detail=response.error or "Inference failed",
-            )
-        cb.record_success()
-        result = response.result
-        prompt_tokens = int(
-            result.metadata.get("prompt_eval_count") or 0
-        ) if result.metadata else 0
-        if prompt_tokens == 0:
-            prompt_tokens = estimate_prompt_tokens(body.prompt)
-        resp = CompletionResponse(
-            id=response.request_id,
-            model=body.model,
-            choices=[
-                CompletionChoice(
-                    index=0,
-                    text=result.text,
-                    finish_reason=result.finish_reason,
+            # Check cache first, then coalesce
+            if cache_obj is not None:
+                cached = await cache_obj.get(model, body.prompt)
+                if cached is not None:
+                    CACHE_HITS.inc()
+                    prompt_tokens = estimate_prompt_tokens(body.prompt)
+                    return _build_completion_response(
+                        body, model, cached, prompt_tokens, 0, 0.0
+                    )
+                CACHE_MISSES.inc()
+
+            timeout = body.timeout_seconds or 300.0
+            try:
+                result = await asyncio.wait_for(
+                    coalescer.coalesce(model, body.prompt, _do_generate),
+                    timeout=timeout,
                 )
-            ],
-            usage=UsageInfo(
-                prompt_tokens=prompt_tokens,
-                completion_tokens=result.tokens_used,
-                total_tokens=prompt_tokens + result.tokens_used,
-            ),
-            latency_ms=result.latency_ms,
+            except TimeoutError as exc:
+                REQUESTS_TOTAL.labels(model=model, endpoint="completions", status="timeout").inc()
+                raise HTTPException(
+                    status_code=status.HTTP_504_GATEWAY_TIMEOUT,
+                    detail=f"Request timed out after {timeout}s",
+                ) from exc
+        finally:
+            throttler.decrement_active()
+
+        # Store in cache
+        if cache_obj is not None:
+            await cache_obj.put(model, body.prompt, result.text)
+
+        prompt_tokens = result.prompt_tokens or estimate_prompt_tokens(body.prompt)
+        resp = _build_completion_response(
+            body, model, result.text, prompt_tokens, result.tokens_used, result.latency_ms
         )
 
-        # Instrument Prometheus counters
-        REQUESTS_TOTAL.labels(model=body.model, endpoint="completions", status="ok").inc()
-        REQUEST_LATENCY.labels(model=body.model, endpoint="completions").observe(
+        REQUESTS_TOTAL.labels(model=model, endpoint="completions", status="ok").inc()
+        REQUEST_LATENCY.labels(model=model, endpoint="completions").observe(
             result.latency_ms / 1000.0
         )
-        TOKENS_GENERATED.labels(model=body.model).inc(result.tokens_used)
-        PROMPT_TOKENS.labels(model=body.model).inc(prompt_tokens)
-        if result.metadata and result.metadata.get("cache_hit"):
-            CACHE_HITS.inc()
-        else:
-            CACHE_MISSES.inc()
-
+        TOKENS_GENERATED.labels(model=model).inc(result.tokens_used)
+        PROMPT_TOKENS.labels(model=model).inc(prompt_tokens)
         return resp
 
     # ------------------------------------------------------------------
@@ -438,103 +403,152 @@ def create_app(config: InferenceConfig | None = None) -> FastAPI:
     )
     async def chat_completions(
         body: ChatCompletionRequest,
-        aggregator: AggregatorDep,
-        ollama_client: OllamaClientDep,
+        pool: PoolDep,
+        throttler: ThrottlerDep,
     ) -> ChatCompletionResponse | StreamingResponse:
         """Generate a chat completion from a list of messages."""
-        await _check_admission(aggregator.pending_count)
+        global _total_requests
+        await _check_admission()
+
         messages = [{"role": msg.role, "content": msg.content} for msg in body.messages]
+        model_router: ModelRouter = app.state.model_router
+        model = model_router.route_chat(messages, explicit_model=body.model or None)
+
+        cache_obj: RedisCache | None = app.state.cache
+        coalescer: RequestCoalescer = app.state.coalescer
 
         if body.stream:
-            REQUESTS_TOTAL.labels(model=body.model, endpoint="chat", status="stream").inc()
-            cache_for_stream = app.state.cache
-            cb_for_stream: CircuitBreaker = app.state.circuit_breaker
-            throttler_for_stream: AdaptiveThrottler = app.state.throttler
-            stream_req_id = f"chat-stream-{uuid.uuid4().hex[:8]}"
-            await throttler_for_stream.reserve(stream_req_id, _REQUEST_MEMORY_ESTIMATE_GB)
+            REQUESTS_TOTAL.labels(model=model, endpoint="chat", status="stream").inc()
+            throttler.increment_active()
             return StreamingResponse(
-                _stream_chat_completion(
-                    ollama_client, body, messages,
-                    cache=cache_for_stream,
-                    circuit_breaker=cb_for_stream,
-                    throttler=throttler_for_stream,
-                    request_id_for_throttler=stream_req_id,
-                    memory_estimate_gb=_REQUEST_MEMORY_ESTIMATE_GB,
-                ),
+                _stream_chat_completion(pool, body, messages, model, cache=cache_obj, throttler=throttler),
                 media_type="text/event-stream",
                 headers={"Cache-Control": "no-cache", "X-Accel-Buffering": "no"},
             )
 
-        timeout = body.timeout_seconds or 300.0
-        request_id = f"chat-{uuid.uuid4().hex[:8]}"
-        throttler: AdaptiveThrottler = app.state.throttler
-        await throttler.reserve(request_id, _REQUEST_MEMORY_ESTIMATE_GB)
+        _total_requests += 1
+        throttler.increment_active()
         try:
-            response = await asyncio.wait_for(
-                aggregator.chat_complete(
-                    model=body.model,
-                    messages=messages,
-                    max_tokens=body.max_tokens,
-                    temperature=body.temperature,
-                    top_p=body.top_p,
-                    stop=body.stop,
-                ),
-                timeout=timeout,
-            )
-        except TimeoutError as exc:
-            await throttler.release(request_id, _REQUEST_MEMORY_ESTIMATE_GB)
-            REQUESTS_TOTAL.labels(model=body.model, endpoint="chat", status="timeout").inc()
-            raise HTTPException(
-                status_code=status.HTTP_504_GATEWAY_TIMEOUT,
-                detail=f"Request timed out after {timeout}s",
-            ) from exc
-        await throttler.release(request_id, _REQUEST_MEMORY_ESTIMATE_GB)
+            cache_prompt = " ".join(m["content"] for m in messages)
 
-        cb: CircuitBreaker = app.state.circuit_breaker
-        if response.result is None:
-            cb.record_failure()
-            REQUESTS_TOTAL.labels(model=body.model, endpoint="chat", status="error").inc()
-            raise HTTPException(
-                status_code=status.HTTP_503_SERVICE_UNAVAILABLE,
-                detail=response.error or "Inference failed",
-            )
-        cb.record_success()
-        result = response.result
-        prompt_tokens = int(
-            result.metadata.get("prompt_eval_count") or 0
-        ) if result.metadata else 0
-        if prompt_tokens == 0:
-            prompt_text = " ".join(m["content"] for m in messages)
-            prompt_tokens = estimate_prompt_tokens(prompt_text)
-        resp = ChatCompletionResponse(
-            id=response.request_id,
-            model=body.model,
-            choices=[
-                ChatCompletionChoice(
-                    index=0,
-                    message=ChatCompletionMessage(content=result.text),
-                    finish_reason=result.finish_reason,
+            async def _do_chat() -> Any:
+                backend = pool.get_healthy_backend()
+                if backend is None:
+                    fallback: FallbackRouter = app.state.fallback_router
+                    return await fallback.route_chat(
+                        model, messages,
+                        max_tokens=body.max_tokens,
+                        temperature=body.temperature,
+                        top_p=body.top_p,
+                        stop=body.stop or None,
+                    )
+                try:
+                    result = await backend.chat(
+                        model, messages,
+                        max_tokens=body.max_tokens,
+                        temperature=body.temperature,
+                        top_p=body.top_p,
+                        stop=body.stop or None,
+                    )
+                    pool.record_success(backend)
+                    return result
+                except Exception as exc:
+                    pool.record_failure(backend)
+                    raise exc
+
+            if cache_obj is not None:
+                cached = await cache_obj.get(model, cache_prompt)
+                if cached is not None:
+                    CACHE_HITS.inc()
+                    prompt_tokens = estimate_prompt_tokens(cache_prompt)
+                    return _build_chat_response(body, model, cached, prompt_tokens, 0, 0.0)
+                CACHE_MISSES.inc()
+
+            timeout = body.timeout_seconds or 300.0
+            try:
+                result = await asyncio.wait_for(
+                    coalescer.coalesce(model, cache_prompt, _do_chat),
+                    timeout=timeout,
                 )
-            ],
-            usage=UsageInfo(
-                prompt_tokens=prompt_tokens,
-                completion_tokens=result.tokens_used,
-                total_tokens=prompt_tokens + result.tokens_used,
-            ),
-            latency_ms=result.latency_ms,
+            except TimeoutError as exc:
+                REQUESTS_TOTAL.labels(model=model, endpoint="chat", status="timeout").inc()
+                raise HTTPException(
+                    status_code=status.HTTP_504_GATEWAY_TIMEOUT,
+                    detail=f"Request timed out after {timeout}s",
+                ) from exc
+        finally:
+            throttler.decrement_active()
+
+        if cache_obj is not None:
+            await cache_obj.put(model, cache_prompt, result.text)
+
+        prompt_tokens = result.prompt_tokens or estimate_prompt_tokens(cache_prompt)
+        resp = _build_chat_response(
+            body, model, result.text, prompt_tokens, result.tokens_used, result.latency_ms
         )
 
-        # Instrument Prometheus counters
-        REQUESTS_TOTAL.labels(model=body.model, endpoint="chat", status="ok").inc()
-        REQUEST_LATENCY.labels(model=body.model, endpoint="chat").observe(
+        REQUESTS_TOTAL.labels(model=model, endpoint="chat", status="ok").inc()
+        REQUEST_LATENCY.labels(model=model, endpoint="chat").observe(
             result.latency_ms / 1000.0
         )
-        TOKENS_GENERATED.labels(model=body.model).inc(result.tokens_used)
-        PROMPT_TOKENS.labels(model=body.model).inc(prompt_tokens)
-
+        TOKENS_GENERATED.labels(model=model).inc(result.tokens_used)
+        PROMPT_TOKENS.labels(model=model).inc(prompt_tokens)
         return resp
 
     return app
+
+
+# ---------------------------------------------------------------------------
+# Response builders
+# ---------------------------------------------------------------------------
+
+
+def _build_completion_response(
+    body: CompletionRequest,
+    model: str,
+    text: str,
+    prompt_tokens: int,
+    completion_tokens: int,
+    latency_ms: float,
+) -> CompletionResponse:
+    return CompletionResponse(
+        id=f"cmpl-{uuid.uuid4().hex[:8]}",
+        model=model,
+        choices=[CompletionChoice(index=0, text=text, finish_reason="stop")],
+        usage=UsageInfo(
+            prompt_tokens=prompt_tokens,
+            completion_tokens=completion_tokens,
+            total_tokens=prompt_tokens + completion_tokens,
+        ),
+        latency_ms=latency_ms,
+    )
+
+
+def _build_chat_response(
+    body: ChatCompletionRequest,
+    model: str,
+    text: str,
+    prompt_tokens: int,
+    completion_tokens: int,
+    latency_ms: float,
+) -> ChatCompletionResponse:
+    return ChatCompletionResponse(
+        id=f"chatcmpl-{uuid.uuid4().hex[:8]}",
+        model=model,
+        choices=[
+            ChatCompletionChoice(
+                index=0,
+                message=ChatCompletionMessage(content=text),
+                finish_reason="stop",
+            )
+        ],
+        usage=UsageInfo(
+            prompt_tokens=prompt_tokens,
+            completion_tokens=completion_tokens,
+            total_tokens=prompt_tokens + completion_tokens,
+        ),
+        latency_ms=latency_ms,
+    )
 
 
 # ---------------------------------------------------------------------------
@@ -543,36 +557,27 @@ def create_app(config: InferenceConfig | None = None) -> FastAPI:
 
 
 async def _stream_completion(
-    client: OllamaClient,
+    pool: BackendPool,
     body: CompletionRequest,
+    model: str,
     *,
-    cache: Any = None,
-    circuit_breaker: CircuitBreaker | None = None,
+    cache: RedisCache | None = None,
     throttler: AdaptiveThrottler | None = None,
-    request_id_for_throttler: str | None = None,
-    memory_estimate_gb: float = 0.5,
 ) -> AsyncIterator[str]:
-    """Yield SSE events for a streaming text completion.
-
-    If *cache* is provided, checks for a cached response first (streams it
-    as synthetic events) and stores the completed stream response.
-    """
+    """Yield SSE events for a streaming text completion."""
     request_id = f"cmpl-{uuid.uuid4().hex[:12]}"
     start = time.monotonic()
 
-    # Check cache before streaming (param-aware key)
-    cache_key = f"{body.prompt}\x00mt={body.max_tokens}\x00t={body.temperature}"
     if cache is not None:
-        cached = await cache.get(body.model, cache_key)
+        cached = await cache.get(model, body.prompt)
         if cached is not None:
             CACHE_HITS.inc()
-            # Cache hit — release throttler reservation immediately
-            if throttler is not None and request_id_for_throttler is not None:
-                await throttler.release(request_id_for_throttler, memory_estimate_gb)
+            if throttler is not None:
+                throttler.decrement_active()
             event = {
                 "id": request_id,
                 "object": "text_completion",
-                "model": body.model,
+                "model": model,
                 "choices": [{"index": 0, "text": cached, "finish_reason": "stop"}],
                 "usage": {
                     "prompt_tokens": estimate_prompt_tokens(body.prompt),
@@ -586,99 +591,76 @@ async def _stream_completion(
             return
         CACHE_MISSES.inc()
 
-    collected_text: list[str] = []
-    total_tokens = 0
+    collected: list[str] = []
+    backend = pool.get_healthy_backend()
+    if backend is None:
+        if throttler is not None:
+            throttler.decrement_active()
+        yield f"data: {json.dumps({'error': 'No healthy backends available'})}\n\n"
+        yield "data: [DONE]\n\n"
+        return
 
     try:
-        async for chunk in client.generate_stream(
-            model=body.model,
-            prompt=body.prompt,
+        async for chunk in backend.generate_stream(
+            model, body.prompt,
             max_tokens=body.max_tokens,
             temperature=body.temperature,
-            top_p=body.top_p,
-            stop_sequences=body.stop or None,
         ):
-            token = chunk.get("response", "")
-            collected_text.append(token)
+            text = chunk.get("text", "")
             done = chunk.get("done", False)
-            finish = "stop" if done else None
+            collected.append(text)
             event = {
                 "id": request_id,
                 "object": "text_completion",
-                "model": body.model,
-                "choices": [{"index": 0, "text": token, "finish_reason": finish}],
+                "model": model,
+                "choices": [{"index": 0, "text": text, "finish_reason": "stop" if done else None}],
             }
             if done:
-                total_tokens = int(chunk.get("eval_count", 0))
-                prompt_tok = int(chunk.get("prompt_eval_count", 0))
-                event["usage"] = {
-                    "prompt_tokens": prompt_tok,
-                    "completion_tokens": total_tokens,
-                    "total_tokens": prompt_tok + total_tokens,
-                }
                 latency_ms = round((time.monotonic() - start) * 1000, 1)
                 event["latency_ms"] = latency_ms
-                # Instrument Prometheus
-                REQUEST_LATENCY.labels(model=body.model, endpoint="completions").observe(
+                REQUEST_LATENCY.labels(model=model, endpoint="completions").observe(
                     latency_ms / 1000.0
                 )
-                TOKENS_GENERATED.labels(model=body.model).inc(total_tokens)
-                if prompt_tok:
-                    PROMPT_TOKENS.labels(model=body.model).inc(prompt_tok)
             yield f"data: {json.dumps(event)}\n\n"
 
-        # Cache completed stream response
-        if cache is not None and collected_text:
-            full_text = "".join(collected_text)
-            await cache.put(body.model, cache_key, full_text)
-
-        if circuit_breaker is not None:
-            circuit_breaker.record_success()
+        pool.record_success(backend)
+        if cache is not None and collected:
+            await cache.put(model, body.prompt, "".join(collected))
     except Exception:
-        if circuit_breaker is not None:
-            circuit_breaker.record_failure()
+        pool.record_failure(backend)
         raise
     finally:
-        if throttler is not None and request_id_for_throttler is not None:
-            await throttler.release(request_id_for_throttler, memory_estimate_gb)
+        if throttler is not None:
+            throttler.decrement_active()
 
     yield "data: [DONE]\n\n"
 
 
 async def _stream_chat_completion(
-    client: OllamaClient,
+    pool: BackendPool,
     body: ChatCompletionRequest,
     messages: list[dict[str, str]],
+    model: str,
     *,
-    cache: Any = None,
-    circuit_breaker: CircuitBreaker | None = None,
+    cache: RedisCache | None = None,
     throttler: AdaptiveThrottler | None = None,
-    request_id_for_throttler: str | None = None,
-    memory_estimate_gb: float = 0.5,
 ) -> AsyncIterator[str]:
-    """Yield SSE events for a streaming chat completion.
-
-    Checks *cache* before streaming and stores the completed response.
-    """
+    """Yield SSE events for a streaming chat completion."""
     request_id = f"chatcmpl-{uuid.uuid4().hex[:12]}"
     start = time.monotonic()
-    raw_key = "\n".join(f"{m['role']}: {m['content']}" for m in messages)
-    cache_key = f"{raw_key}\x00mt={body.max_tokens}\x00t={body.temperature}"
+    cache_prompt = " ".join(m["content"] for m in messages)
 
-    # Check cache before streaming
     if cache is not None:
-        cached = await cache.get(body.model, cache_key)
+        cached = await cache.get(model, cache_prompt)
         if cached is not None:
             CACHE_HITS.inc()
-            # Cache hit — release throttler reservation immediately
-            if throttler is not None and request_id_for_throttler is not None:
-                await throttler.release(request_id_for_throttler, memory_estimate_gb)
-            prompt_text = " ".join(m["content"] for m in messages)
-            ptok = estimate_prompt_tokens(prompt_text)
+            if throttler is not None:
+                throttler.decrement_active()
+            ptok = estimate_prompt_tokens(cache_prompt)
             event = {
                 "id": request_id,
                 "object": "chat.completion.chunk",
-                "model": body.model,
+                "model": model,
                 "choices": [{
                     "index": 0,
                     "delta": {"role": "assistant", "content": cached},
@@ -696,67 +678,51 @@ async def _stream_chat_completion(
             return
         CACHE_MISSES.inc()
 
-    collected_text: list[str] = []
+    collected: list[str] = []
+    backend = pool.get_healthy_backend()
+    if backend is None:
+        if throttler is not None:
+            throttler.decrement_active()
+        yield f"data: {json.dumps({'error': 'No healthy backends available'})}\n\n"
+        yield "data: [DONE]\n\n"
+        return
 
     try:
-        async for chunk in client.chat_stream(
-            model=body.model,
-            messages=messages,
+        async for chunk in backend.chat_stream(
+            model, messages,
             max_tokens=body.max_tokens,
             temperature=body.temperature,
-            top_p=body.top_p,
-            stop_sequences=body.stop or None,
         ):
-            msg = chunk.get("message", {})
-            token = msg.get("content", "")
-            collected_text.append(token)
+            content = chunk.get("content", "")
             done = chunk.get("done", False)
-            finish = "stop" if done else None
+            collected.append(content)
             event = {
                 "id": request_id,
                 "object": "chat.completion.chunk",
-                "model": body.model,
-                "choices": [
-                    {
-                        "index": 0,
-                        "delta": {"role": "assistant", "content": token},
-                        "finish_reason": finish,
-                    }
-                ],
+                "model": model,
+                "choices": [{
+                    "index": 0,
+                    "delta": {"role": "assistant", "content": content},
+                    "finish_reason": "stop" if done else None,
+                }],
             }
             if done:
-                total_tokens = int(chunk.get("eval_count", 0))
-                prompt_tok = int(chunk.get("prompt_eval_count", 0))
-                event["usage"] = {
-                    "prompt_tokens": prompt_tok,
-                    "completion_tokens": total_tokens,
-                    "total_tokens": prompt_tok + total_tokens,
-                }
                 latency_ms = round((time.monotonic() - start) * 1000, 1)
                 event["latency_ms"] = latency_ms
-                # Instrument Prometheus
-                REQUEST_LATENCY.labels(model=body.model, endpoint="chat").observe(
+                REQUEST_LATENCY.labels(model=model, endpoint="chat").observe(
                     latency_ms / 1000.0
                 )
-                TOKENS_GENERATED.labels(model=body.model).inc(total_tokens)
-                if prompt_tok:
-                    PROMPT_TOKENS.labels(model=body.model).inc(prompt_tok)
             yield f"data: {json.dumps(event)}\n\n"
 
-        # Cache completed stream response
-        if cache is not None and collected_text:
-            full_text = "".join(collected_text)
-            await cache.put(body.model, cache_key, full_text)
-
-        if circuit_breaker is not None:
-            circuit_breaker.record_success()
+        pool.record_success(backend)
+        if cache is not None and collected:
+            await cache.put(model, cache_prompt, "".join(collected))
     except Exception:
-        if circuit_breaker is not None:
-            circuit_breaker.record_failure()
+        pool.record_failure(backend)
         raise
     finally:
-        if throttler is not None and request_id_for_throttler is not None:
-            await throttler.release(request_id_for_throttler, memory_estimate_gb)
+        if throttler is not None:
+            throttler.decrement_active()
 
     yield "data: [DONE]\n\n"
 

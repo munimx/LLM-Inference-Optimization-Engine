@@ -5,12 +5,12 @@ from typing import Annotated
 import structlog
 from fastapi import Depends, Request
 
-from llm_inference_engine.api.aggregator import RequestAggregator
-from llm_inference_engine.api.cache import SemanticCache
-from llm_inference_engine.integration.ollama_client import OllamaClient
-from llm_inference_engine.optimization.memory import MemoryEstimator
+from llm_inference_engine.api.cache import RedisCache
+from llm_inference_engine.api.coalescer import RequestCoalescer
+from llm_inference_engine.api.fallback_router import FallbackRouter
+from llm_inference_engine.api.model_router import ModelRouter
+from llm_inference_engine.integration.backend_pool import BackendPool
 from llm_inference_engine.optimization.throttler import AdaptiveThrottler
-from llm_inference_engine.scheduling.scheduler import Scheduler
 
 logger = structlog.get_logger(__name__)
 
@@ -20,83 +20,77 @@ logger = structlog.get_logger(__name__)
 # ---------------------------------------------------------------------------
 
 
-def get_ollama_client(request: Request) -> OllamaClient:
-    """Return the shared :class:`~llm_inference_engine.integration.\
-ollama_client.OllamaClient` from app state."""
-    client: OllamaClient | None = getattr(request.app.state, "ollama_client", None)
-    if client is None:
-        raise RuntimeError("OllamaClient not initialized — check server startup logs")
-    return client
+def get_pool(request: Request) -> BackendPool:
+    """Return the shared :class:`~llm_inference_engine.integration.backend_pool.BackendPool`."""
+    pool: BackendPool | None = getattr(request.app.state, "pool", None)
+    if pool is None:
+        raise RuntimeError("BackendPool not initialized — check server startup logs")
+    return pool
 
 
-def get_scheduler(request: Request) -> Scheduler:
-    """Return the shared :class:`~llm_inference_engine.scheduling.\
-scheduler.Scheduler` from app state."""
-    scheduler: Scheduler | None = getattr(request.app.state, "scheduler", None)
-    if scheduler is None:
-        raise RuntimeError("Scheduler not initialized — check server startup logs")
-    return scheduler
-
-
-def get_cache(request: Request) -> SemanticCache:
-    """Return the shared :class:`~llm_inference_engine.api.cache.\
-SemanticCache` from app state."""
-    cache: SemanticCache | None = getattr(request.app.state, "cache", None)
+def get_cache(request: Request) -> RedisCache:
+    """Return the shared :class:`~llm_inference_engine.api.cache.RedisCache`."""
+    cache: RedisCache | None = getattr(request.app.state, "cache", None)
     if cache is None:
-        raise RuntimeError("Cache not initialized — check server startup logs")
+        raise RuntimeError("RedisCache not initialized — check server startup logs")
     return cache
 
 
-def get_aggregator(request: Request) -> RequestAggregator:
-    """Return the shared :class:`~llm_inference_engine.api.aggregator.\
-RequestAggregator` from app state."""
-    aggregator: RequestAggregator | None = getattr(request.app.state, "aggregator", None)
-    if aggregator is None:
-        raise RuntimeError("Aggregator not initialized — check server startup logs")
-    return aggregator
-
-
 def get_throttler(request: Request) -> AdaptiveThrottler:
-    """Return the shared :class:`~llm_inference_engine.optimization.\
-throttler.AdaptiveThrottler` from app state."""
+    """Return the shared :class:`~llm_inference_engine.optimization.throttler.AdaptiveThrottler`."""
     throttler: AdaptiveThrottler | None = getattr(request.app.state, "throttler", None)
     if throttler is None:
-        raise RuntimeError("Throttler not initialized — check server startup logs")
+        raise RuntimeError("AdaptiveThrottler not initialized — check server startup logs")
     return throttler
 
 
-def get_memory_estimator(request: Request) -> MemoryEstimator:
-    """Return the shared :class:`~llm_inference_engine.optimization.\
-memory.MemoryEstimator` from app state."""
-    estimator: MemoryEstimator | None = getattr(request.app.state, "memory_estimator", None)
-    if estimator is None:
-        raise RuntimeError("MemoryEstimator not initialized — check server startup logs")
-    return estimator
+def get_coalescer(request: Request) -> RequestCoalescer:
+    """Return the shared :class:`~llm_inference_engine.api.coalescer.RequestCoalescer`."""
+    coalescer: RequestCoalescer | None = getattr(request.app.state, "coalescer", None)
+    if coalescer is None:
+        raise RuntimeError("RequestCoalescer not initialized — check server startup logs")
+    return coalescer
+
+
+def get_model_router(request: Request) -> ModelRouter:
+    """Return the shared :class:`~llm_inference_engine.api.model_router.ModelRouter`."""
+    router: ModelRouter | None = getattr(request.app.state, "model_router", None)
+    if router is None:
+        raise RuntimeError("ModelRouter not initialized — check server startup logs")
+    return router
+
+
+def get_fallback_router(request: Request) -> FallbackRouter:
+    """Return the shared :class:`~llm_inference_engine.api.fallback_router.FallbackRouter`."""
+    router: FallbackRouter | None = getattr(request.app.state, "fallback_router", None)
+    if router is None:
+        raise RuntimeError("FallbackRouter not initialized — check server startup logs")
+    return router
 
 
 # ---------------------------------------------------------------------------
 # Type aliases for route handler injection
 # ---------------------------------------------------------------------------
 
-OllamaClientDep = Annotated[OllamaClient, Depends(get_ollama_client)]
-SchedulerDep = Annotated[Scheduler, Depends(get_scheduler)]
-CacheDep = Annotated[SemanticCache, Depends(get_cache)]
-AggregatorDep = Annotated[RequestAggregator, Depends(get_aggregator)]
+PoolDep = Annotated[BackendPool, Depends(get_pool)]
+CacheDep = Annotated[RedisCache, Depends(get_cache)]
 ThrottlerDep = Annotated[AdaptiveThrottler, Depends(get_throttler)]
-MemoryEstimatorDep = Annotated[MemoryEstimator, Depends(get_memory_estimator)]
+CoalescerDep = Annotated[RequestCoalescer, Depends(get_coalescer)]
+ModelRouterDep = Annotated[ModelRouter, Depends(get_model_router)]
+FallbackRouterDep = Annotated[FallbackRouter, Depends(get_fallback_router)]
 
 
 __all__ = [
-    "get_ollama_client",
-    "get_scheduler",
+    "get_pool",
     "get_cache",
-    "get_aggregator",
     "get_throttler",
-    "get_memory_estimator",
-    "OllamaClientDep",
-    "SchedulerDep",
+    "get_coalescer",
+    "get_model_router",
+    "get_fallback_router",
+    "PoolDep",
     "CacheDep",
-    "AggregatorDep",
     "ThrottlerDep",
-    "MemoryEstimatorDep",
+    "CoalescerDep",
+    "ModelRouterDep",
+    "FallbackRouterDep",
 ]

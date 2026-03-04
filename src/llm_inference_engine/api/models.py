@@ -12,7 +12,7 @@ from pydantic import BaseModel, Field, field_validator
 class CompletionRequest(BaseModel):
     """Request body for ``POST /completions``."""
 
-    model: str = Field(..., description="Ollama model tag (e.g. 'llama3.1:8b')")
+    model: str = Field(..., description="vLLM model identifier (e.g. 'mistralai/Mistral-7B-Instruct-v0.2'). Leave empty to use automatic model routing.")
     prompt: str = Field(..., description="The prompt to complete")
     max_tokens: int = Field(default=256, ge=1, le=32_768, description="Max tokens to generate")
     temperature: float = Field(default=0.7, ge=0.0, le=2.0)
@@ -50,7 +50,7 @@ class ChatMessage(BaseModel):
 class ChatCompletionRequest(BaseModel):
     """Request body for ``POST /chat/completions``."""
 
-    model: str = Field(..., description="Ollama model tag")
+    model: str = Field(..., description="vLLM model identifier")
     messages: list[ChatMessage] = Field(..., min_length=1)
     max_tokens: int = Field(default=256, ge=1, le=32_768)
     temperature: float = Field(default=0.7, ge=0.0, le=2.0)
@@ -131,18 +131,17 @@ class HealthResponse(BaseModel):
     """Response body for ``GET /health``."""
 
     status: str
-    ollama_available: bool
-    version: str = "0.1.0"
+    backend_available: bool
+    version: str = "0.2.0"
     details: dict[str, Any] = Field(default_factory=dict)
 
 
 class MetricsResponse(BaseModel):
     """Response body for ``GET /metrics`` (simplified JSON metrics)."""
 
-    committed_memory_gb: float
-    available_memory_gb: float
-    memory_limit_gb: float
+    kv_cache_usage: float
     active_requests: int
+    healthy_backends: int
     cache_hits: int
     cache_misses: int
     total_requests: int

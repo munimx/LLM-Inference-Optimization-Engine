@@ -1,8 +1,4 @@
-"""Prometheus metrics for the inference engine.
-
-Exposes Prometheus-compatible metrics at ``/metrics/prometheus`` so that
-standard monitoring stacks (Prometheus, Grafana, Datadog) can scrape them.
-"""
+"""Prometheus metrics for the inference engine."""
 
 from prometheus_client import Counter, Gauge, Histogram
 
@@ -35,14 +31,18 @@ CACHE_SIZE = Gauge(
     "Current number of cache entries",
 )
 
-# Memory metrics
-COMMITTED_MEMORY_GB = Gauge(
-    "llm_engine_committed_memory_gb",
-    "Currently committed memory in gigabytes",
+# vLLM backend metrics
+KV_CACHE_USAGE = Gauge(
+    "llm_engine_kv_cache_usage",
+    "vLLM KV cache usage fraction (0.0 – 1.0)",
 )
 ACTIVE_REQUESTS = Gauge(
     "llm_engine_active_requests",
     "Number of in-flight requests",
+)
+HEALTHY_BACKENDS = Gauge(
+    "llm_engine_healthy_backends",
+    "Number of backends with closed or half-open circuit breakers",
 )
 
 # Token metrics
@@ -64,8 +64,9 @@ __all__ = [
     "CACHE_HITS",
     "CACHE_MISSES",
     "CACHE_SIZE",
-    "COMMITTED_MEMORY_GB",
+    "KV_CACHE_USAGE",
     "ACTIVE_REQUESTS",
+    "HEALTHY_BACKENDS",
     "TOKENS_GENERATED",
     "PROMPT_TOKENS",
 ]
